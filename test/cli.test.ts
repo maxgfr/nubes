@@ -16,11 +16,13 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { gitBlobSha, loadEngineSync } from "../src/engine";
 import { GitHub } from "../src/github/client";
 import { Remote } from "../src/github/repo";
 import { createFakeGitHub, serveFakeGitHub } from "./fake-github";
 
 setDefaultTimeout(30_000);
+loadEngineSync(readFileSync(resolve(import.meta.dir, "../src/engine/pkg/nubes_engine_bg.wasm")));
 
 const BIN = resolve(import.meta.dir, "../target/debug/nubes");
 const has = existsSync(BIN);
@@ -34,13 +36,18 @@ afterAll(() => {
   for (const d of dirs) rmSync(d, { recursive: true, force: true });
 });
 
+/** Credentials (and encrypted folders' keys) of each test device, outside its synced folder. */
+const credDirs = new Map<string, string>();
+
 function folder(): string {
   const d = mkdtempSync(join(tmpdir(), "nubes-cli-"));
-  dirs.push(d);
+  const c = mkdtempSync(join(tmpdir(), "nubes-creds-"));
+  dirs.push(d, c);
+  credDirs.set(d, c);
   return d;
 }
 
-function env(cwd: string, device = "laptop", token = "test-token") {
+function env(cwd: string, device = "laptop", token = "test-token", extra = {}) {
   return {
     PATH: process.env.PATH ?? "",
     HOME: cwd,
@@ -48,7 +55,8 @@ function env(cwd: string, device = "laptop", token = "test-token") {
     NUBES_TOKEN: token,
     NUBES_DEVICE: device,
     NUBES_NO_GH: "1",
-    NUBES_CREDENTIALS_FILE: join(cwd, ".creds"),
+    NUBES_CREDENTIALS_FILE: join(credDirs.get(cwd) ?? cwd, "credentials"),
+    ...extra,
   };
 }
 
@@ -57,12 +65,13 @@ async function nubes(
   args: string[],
   device = "laptop",
   token = "test-token",
+  extra: Record<string, string> = {},
 ): Promise<string> {
   const p = Bun.spawn([BIN, ...args], {
     stdout: "pipe",
     stderr: "pipe",
     cwd,
-    env: env(cwd, device, token),
+    env: env(cwd, device, token, extra),
   });
   const [stdout, stderr, code] = await Promise.all([
     new Response(p.stdout).text(),
@@ -175,6 +184,55 @@ describe.skipIf(!has)("nubes CLI", () => {
     await nubes(a, ["sync"]);
     const s = await remote.state();
     expect([...s.files.keys()].sort()).toEqual(["inbox/reply.txt", "inbox/scan.txt"]);
+  });
+
+  test("an encrypted folder: the CLI encrypts what the web app decrypts, and the reverse", async () => {
+    const pass = { NUBES_PASSPHRASE: "correct horse battery staple" };
+    const a = folder();
+    write(a, "taxes/2026.pdf", "%PDF secret");
+    await nubes(a, ["init", repo, "--encrypt"], "laptop", "test-token", pass);
+    await nubes(a, ["sync"]); // the key is kept: no passphrase needed any more
+    const stored = fake.files(repo);
+    expect(stored["taxes/2026.pdf.age"]).toBeDefined();
+    expect(stored["taxes/2026.pdf.age"]).not.toContain("secret");
+    expect(stored["taxes/2026.pdf"]).toBeUndefined();
+    expect(Object.keys(stored).some((p) => p.includes("credentials"))).toBe(false);
+
+    // The web app opens it with the passphrase, reads, and writes.
+    const gh = new GitHub("test-token", { api });
+    const web = new Remote(gh, { full: repo, branch: "main", prefix: "" });
+    const s = await web.state();
+    expect([...s.files.keys()]).toEqual(["taxes/2026.pdf"]);
+    await web.unlock(s, pass.NUBES_PASSPHRASE);
+    const pdf = s.files.get("taxes/2026.pdf")?.sha as string;
+    expect(new TextDecoder().decode(await web.get(pdf))).toBe("%PDF secret");
+    await web.apply(async (now) => {
+      const data = new TextEncoder().encode("written on the iPad");
+      const sha = gitBlobSha(data);
+      await web.put(data, sha, now);
+      return [{ path: "ipad.txt", sha }];
+    }, "nubes: 1 added (from ipad)");
+
+    await nubes(a, ["sync"]);
+    expect(read(a, "ipad.txt")).toBe("written on the iPad");
+
+    // A second device needs the passphrase once; `lock` forgets the key.
+    const b = folder();
+    await expect(nubes(b, ["init", repo], "desk")).rejects.toThrow(/NUBES_PASSPHRASE/);
+    await expect(
+      nubes(b, ["init", repo], "desk", "test-token", { NUBES_PASSPHRASE: "wrong" }),
+    ).rejects.toThrow(/wrong passphrase/);
+    await nubes(b, ["init", repo], "desk", "test-token", pass);
+    await nubes(b, ["sync"], "desk");
+    expect(read(b, "taxes/2026.pdf")).toBe("%PDF secret");
+    expect(await nubes(b, ["lock"], "desk")).toContain("key removed");
+    await expect(nubes(b, ["sync"], "desk")).rejects.toThrow(/encrypted/);
+
+    // A plain folder with files cannot be turned into an encrypted one.
+    const c = folder();
+    await expect(nubes(c, ["init", repo, "--encrypt"], "x", "test-token", pass)).rejects.toThrow(
+      /already encrypted/,
+    );
   });
 
   test("push and pull go one way; restore brings back an old version", async () => {

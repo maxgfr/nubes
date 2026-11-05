@@ -16,6 +16,7 @@ import {
   lastChecked,
   link,
   loading,
+  locked,
   online,
   pendingCount,
   pinStatus,
@@ -30,7 +31,7 @@ import {
 } from "../state";
 import { isPinned } from "../store/offline";
 import { canPickFolder, capturedName, filesFromDrop, filesFromInput, isAppleTouch } from "./drop";
-import { Activity, Editor, MoveTo, NewNote, Thumb, Trash, Viewer } from "./Feeds";
+import { Activity, Editor, MoveTo, NewNote, Thumb, Trash, Unlock, Viewer } from "./Feeds";
 import { dirname, humanSize, kindOf, timeAgo } from "./format";
 import {
   IconActivity,
@@ -311,7 +312,7 @@ export function Explorer() {
     let cancelled = false;
     recentCommits(r).then(
       (c) => {
-        if (!cancelled) dates.value = changeDates(c, r.prefix);
+        if (!cancelled) dates.value = changeDates(c, (p) => r.nubesPath(p));
       },
       () => {},
     );
@@ -572,6 +573,7 @@ export function Explorer() {
           </button>
         </div>
 
+        {locked.value && <Unlock />}
         {!searching && <FolderSync />}
 
         {!s ? (

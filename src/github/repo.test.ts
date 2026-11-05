@@ -97,9 +97,9 @@ describe("Remote", () => {
     const s = await remote.state();
     fake.push("octo/files", { "x.txt": "moved" });
     const sha = await gh.createBlob("octo/files", bytes("y"));
-    await expect(
-      remote.commit([{ path: "y.txt", sha }], "y", s.head as string, s.tree as string),
-    ).rejects.toBeInstanceOf(RefMovedError);
+    await expect(remote.commit([{ path: "y.txt", sha }], "y", s)).rejects.toBeInstanceOf(
+      RefMovedError,
+    );
   });
 
   test("history lists the commits that touched a path, and fileAt reads old versions", async () => {

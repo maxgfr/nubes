@@ -266,6 +266,26 @@
       "input": { "remote": { "../evil": { "sha": "A" } } },
       "actions": [{ "op": "skip", "path": "../evil", "reason": "unsafePath" }],
       "nextBase": {}
+    },
+    {
+      "name": "encrypted folder: plain ids only (a file stored again under a new .age blob is unchanged), a new file uploads, a remote deletion applies",
+      "input": {
+        "base": { "notes.md": { "sha": "P1", "size": 5 }, "old.txt": { "sha": "P3", "size": 2 } },
+        "local": {
+          "notes.md": { "sha": "P1", "size": 5 },
+          "old.txt": { "sha": "P3", "size": 2 },
+          "new.md": { "sha": "P2", "size": 3 }
+        },
+        "remote": { "notes.md": { "sha": "P1", "size": 5 } }
+      },
+      "actions": [
+        { "op": "upload", "path": "new.md", "sha": "P2", "size": 3 },
+        { "op": "deleteLocal", "path": "old.txt" }
+      ],
+      "nextBase": {
+        "new.md": { "sha": "P2", "size": 3 },
+        "notes.md": { "sha": "P1", "size": 5 }
+      }
     }
   ]
 }

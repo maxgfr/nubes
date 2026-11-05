@@ -3,6 +3,9 @@
 //! 2. what `nubes login` stored: the macOS Keychain, or elsewhere
 //!    `~/.config/nubes/credentials` (mode 0600), or `NUBES_CREDENTIALS_FILE`;
 //! 3. `gh auth token`, if the GitHub CLI is signed in.
+//!
+//! The keys of encrypted folders are kept the same way (one Keychain entry,
+//! or one 0600 file beside the credentials, per folder).
 
 use std::fs;
 use std::io::Write;
@@ -77,23 +80,9 @@ pub fn store_name() -> &'static str {
 }
 
 pub fn load() -> Result<Option<String>> {
-    if use_keychain() {
-        let out = Command::new("/usr/bin/security")
-            .args(["find-generic-password", "-s", SERVICE, "-a", ACCOUNT, "-w"])
-            .stderr(Stdio::null())
-            .output()
-            .context("running /usr/bin/security")?;
-        let t = String::from_utf8_lossy(&out.stdout).trim().to_string();
-        return Ok((out.status.success() && !t.is_empty()).then_some(t));
-    }
-    let Some(p) = file_path() else {
-        return Ok(None);
-    };
-    match fs::read_to_string(&p) {
-        Ok(t) if !t.trim().is_empty() => Ok(Some(t.trim().to_string())),
-        Ok(_) => Ok(None),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(e) => Err(e).with_context(|| format!("reading {}", p.display())),
+    match file_path() {
+        Some(p) => load_secret(ACCOUNT, &p),
+        None => Ok(None),
     }
 }
 
@@ -101,8 +90,82 @@ pub fn store(token: &str) -> Result<()> {
     if !token.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
         bail!("that does not look like a GitHub token");
     }
+    let p = file_path().context("no HOME to store the token in")?;
+    store_secret(ACCOUNT, &p, token, "nubes")
+}
+
+pub fn remove() -> Result<bool> {
+    match file_path() {
+        Some(p) => remove_secret(ACCOUNT, &p),
+        None => Ok(false),
+    }
+}
+
+/// Where an encrypted folder's key is kept: one entry per repository and folder.
+fn key_account(repo: &str, prefix: &str) -> String {
+    let id = nubes_core::git_blob_sha(format!("{repo}:{prefix}").as_bytes());
+    format!("key-{}", &id[..16])
+}
+
+fn key_file(account: &str) -> Option<PathBuf> {
+    let creds = file_path()?;
+    Some(creds.with_file_name(format!(
+        "{}.{account}",
+        creds.file_name()?.to_string_lossy()
+    )))
+}
+
+/// The key this device keeps for an encrypted folder.
+pub fn load_key(repo: &str, prefix: &str) -> Result<Option<String>> {
+    let account = key_account(repo, prefix);
+    match key_file(&account) {
+        Some(p) => load_secret(&account, &p),
+        None => Ok(None),
+    }
+}
+
+pub fn store_key(repo: &str, prefix: &str, secret: &str) -> Result<()> {
+    if !secret
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '-')
+    {
+        bail!("that does not look like an age key");
+    }
+    let account = key_account(repo, prefix);
+    let p = key_file(&account).context("no HOME to store the key in")?;
+    store_secret(&account, &p, secret, &format!("nubes key for {repo}"))
+}
+
+pub fn remove_key(repo: &str, prefix: &str) -> Result<bool> {
+    let account = key_account(repo, prefix);
+    match key_file(&account) {
+        Some(p) => remove_secret(&account, &p),
+        None => Ok(false),
+    }
+}
+
+fn load_secret(account: &str, file: &PathBuf) -> Result<Option<String>> {
     if use_keychain() {
-        // Through `security -i` on stdin, so the token never shows in a process list.
+        let out = Command::new("/usr/bin/security")
+            .args(["find-generic-password", "-s", SERVICE, "-a", account, "-w"])
+            .stderr(Stdio::null())
+            .output()
+            .context("running /usr/bin/security")?;
+        let t = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        return Ok((out.status.success() && !t.is_empty()).then_some(t));
+    }
+    match fs::read_to_string(file) {
+        Ok(t) if !t.trim().is_empty() => Ok(Some(t.trim().to_string())),
+        Ok(_) => Ok(None),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(e).with_context(|| format!("reading {}", file.display())),
+    }
+}
+
+/// `secret` and `account` must be shell-safe words (checked by the callers).
+fn store_secret(account: &str, file: &PathBuf, secret: &str, label: &str) -> Result<()> {
+    if use_keychain() {
+        // Through `security -i` on stdin, so the secret never shows in a process list.
         let mut child = Command::new("/usr/bin/security")
             .arg("-i")
             .stdin(Stdio::piped())
@@ -110,18 +173,18 @@ pub fn store(token: &str) -> Result<()> {
             .spawn()
             .context("running /usr/bin/security")?;
         let mut stdin = child.stdin.take().context("security stdin")?;
+        let label = label.replace('"', "");
         writeln!(
             stdin,
-            "add-generic-password -U -s {SERVICE} -a {ACCOUNT} -l nubes -w {token}"
+            "add-generic-password -U -s {SERVICE} -a {account} -l \"{label}\" -w {secret}"
         )?;
         drop(stdin);
         if !child.wait()?.success() {
-            bail!("could not store the token in the Keychain");
+            bail!("could not store it in the Keychain");
         }
         return Ok(());
     }
-    let p = file_path().context("no HOME to store the token in")?;
-    if let Some(dir) = p.parent() {
+    if let Some(dir) = file.parent() {
         fs::create_dir_all(dir)?;
     }
     let mut opts = fs::OpenOptions::new();
@@ -132,26 +195,25 @@ pub fn store(token: &str) -> Result<()> {
         opts.mode(0o600);
     }
     let mut f = opts
-        .open(&p)
-        .with_context(|| format!("writing {}", p.display()))?;
-    writeln!(f, "{token}")?;
+        .open(file)
+        .with_context(|| format!("writing {}", file.display()))?;
+    writeln!(f, "{secret}")?;
     Ok(())
 }
 
-pub fn remove() -> Result<bool> {
+fn remove_secret(account: &str, file: &PathBuf) -> Result<bool> {
     if use_keychain() {
         let st = Command::new("/usr/bin/security")
-            .args(["delete-generic-password", "-s", SERVICE, "-a", ACCOUNT])
+            .args(["delete-generic-password", "-s", SERVICE, "-a", account])
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .status()?;
         return Ok(st.success());
     }
-    match file_path() {
-        Some(p) if p.exists() => {
-            fs::remove_file(p)?;
-            Ok(true)
-        }
-        _ => Ok(false),
+    if file.exists() {
+        fs::remove_file(file)?;
+        Ok(true)
+    } else {
+        Ok(false)
     }
 }

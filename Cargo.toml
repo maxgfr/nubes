@@ -20,3 +20,16 @@ inherits = "release"
 opt-level = "z"
 lto = true
 panic = "abort"
+
+# Debug builds (tests) would spend tens of seconds in scrypt: optimize the crypto.
+[profile.dev.package.scrypt]
+opt-level = 3
+
+[profile.dev.package.salsa20]
+opt-level = 3
+
+[profile.dev.package.sha2]
+opt-level = 3
+
+[profile.dev.package.pbkdf2]
+opt-level = 3

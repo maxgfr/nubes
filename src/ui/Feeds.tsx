@@ -11,7 +11,6 @@ import {
   RECENT,
   type RecentCommit,
   recentCommits,
-  relative,
 } from "../changes";
 import type { CommitInfo } from "../github/client";
 import {
@@ -23,6 +22,7 @@ import {
   remoteState,
   restoreDeleted,
   saveText,
+  unlockFolder,
 } from "../state";
 import { basename, dirname, humanSize, mimeOf, timeAgo } from "./format";
 import { IconChevron, IconDownload, IconImage } from "./icons";
@@ -115,7 +115,7 @@ export function Activity(props: { onClose: () => void }) {
                   <li class="muted">Loading…</li>
                 ) : (
                   (files.value[c.sha] ?? []).map((f) => {
-                    const p = relative(r?.prefix ?? "", f.path);
+                    const p = r ? r.nubesPath(f.path) : null;
                     return p ? (
                       <li key={f.path}>
                         <span class={`change change-${f.status}`}>{f.status}</span> {p}
@@ -142,7 +142,7 @@ export function Trash(props: { onClose: () => void }) {
     if (!r) return;
     recentCommits(r)
       .then((c) => {
-        items.value = deletedFiles(c, r.prefix, remoteState.value?.files ?? new Map());
+        items.value = deletedFiles(c, (p) => r.nubesPath(p), remoteState.value?.files ?? new Map());
       })
       .catch((err) => {
         error.value = describeError(err);
@@ -423,6 +423,59 @@ export function Viewer(props: { images: Row[]; start: number; onClose: () => voi
         )}
       </div>
     </Modal>
+  );
+}
+
+/** Asks the passphrase of an encrypted folder this device has no key for yet. */
+export function Unlock() {
+  const pass = useSignal("");
+  const error = useSignal<string | null>(null);
+  const pending = useSignal(false);
+  return (
+    <form
+      class="card form unlock"
+      onSubmit={async (e) => {
+        e.preventDefault();
+        if (!pass.value) return;
+        pending.value = true;
+        error.value = null;
+        try {
+          await unlockFolder(pass.value);
+        } catch (err) {
+          error.value = describeError(err);
+        } finally {
+          pending.value = false;
+        }
+      }}
+    >
+      <div>
+        <b>This folder is encrypted end to end.</b>{" "}
+        <span class="muted">
+          Its file names are visible; their contents need the folder's passphrase. This device then
+          keeps the key.
+        </span>
+      </div>
+      <label for="passphrase">Passphrase</label>
+      <div class="row">
+        <input
+          id="passphrase"
+          type="password"
+          autocomplete="current-password"
+          value={pass.value}
+          onInput={(e) => {
+            pass.value = e.currentTarget.value;
+          }}
+        />
+        <button class="btn primary" type="submit" disabled={pending.value || !pass.value}>
+          {pending.value ? "Unlocking…" : "Unlock"}
+        </button>
+      </div>
+      {error.value && (
+        <p class="error" role="alert">
+          {error.value}
+        </p>
+      )}
+    </form>
   );
 }
 

@@ -23,6 +23,7 @@ serde_json = "1"
 ureq = { version = "3", features = ["json"] }
 walkdir = "2"
 notify = { version = "8", default-features = false, features = ["macos_fsevent"] }
+age = "0.12"
 
 [dev-dependencies]
 tempfile = "3"

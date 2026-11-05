@@ -1,18 +1,23 @@
 //! A blocking GitHub REST client: the same endpoints, retries and quirks as
 //! the web app's `src/github/client.ts`.
 
-use std::collections::{BTreeMap, HashSet};
+use std::cell::{Cell, RefCell};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt;
 use std::thread::sleep;
 use std::time::Duration;
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use base64::Engine as _;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+
+use crate::crypt::Cipher;
 
 pub const API: &str = "https://api.github.com";
 pub const META_PATH: &str = ".nubes/meta.json";
+/// FORMAT.md version of an encrypted folder.
+const AGE_FORMAT_VERSION: u32 = 2;
 const BODY_LIMIT: u64 = 256 * 1024 * 1024;
 
 /// A non-2xx answer from GitHub.
@@ -531,14 +536,52 @@ pub struct RemoteFile {
     pub mode: String,
 }
 
+/// nubes' own files, at the top of the nubes folder (the prefix).
+pub const OWN_DIR: &str = ".nubes/";
+/// An encrypted folder's key, encrypted with its passphrase. Its presence makes the folder encrypted.
+pub const KEY_FILE: &str = ".nubes/key.age";
+/// What each `<path>.age` holds: `{ plainSha, size, blobSha }`.
+pub const MANIFEST_FILE: &str = ".nubes/manifest.json";
+const FOLDER_META: &str = ".nubes/meta.json";
+
+/// One file of an encrypted folder, as the manifest records it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Sealed {
+    /// The git blob id of the plain content (what the engine compares).
+    pub plain_sha: String,
+    pub size: u64,
+    /// The blob that stores it, encrypted, as `<path>.age`.
+    pub blob_sha: String,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct Manifest {
+    #[serde(default)]
+    pub version: u32,
+    #[serde(default)]
+    pub files: BTreeMap<String, Sealed>,
+}
+
 /// The branch as seen by nubes: files under the prefix, relative to it.
+/// In an encrypted folder, paths lose their `.age` and ids are those of the
+/// plain content, so the engine sees the same thing in both modes.
 #[derive(Debug, Default)]
 pub struct RemoteState {
     pub head: Option<String>,
     pub tree: Option<String>,
     pub files: BTreeMap<String, RemoteFile>,
+    /// Content already stored: never uploaded again.
     pub blobs: HashSet<String>,
     pub has_meta: bool,
+    /// Whether the folder is encrypted (it has `.nubes/key.age`).
+    pub encrypted: bool,
+    pub key_blob: Option<String>,
+    pub manifest: Manifest,
+    /// Encrypted folder: plain blob id → stored blob id.
+    pub stored: HashMap<String, String>,
+    /// Encrypted folder: files nubes did not write (no manifest entry): left alone.
+    pub foreign: Vec<String>,
 }
 
 pub struct Remote<'a> {
@@ -546,6 +589,11 @@ pub struct Remote<'a> {
     pub full: String,
     pub branch: String,
     pub prefix: String,
+    cipher: RefCell<Option<Cipher>>,
+    encrypted: Cell<bool>,
+    /// Plain id → (stored id, size), for content seen or uploaded in this run.
+    known: RefCell<HashMap<String, (String, u64)>>,
+    manifests: RefCell<HashMap<String, Manifest>>,
 }
 
 impl<'a> Remote<'a> {
@@ -560,6 +608,10 @@ impl<'a> Remote<'a> {
             full: full.to_string(),
             branch: branch.to_string(),
             prefix,
+            cipher: RefCell::new(None),
+            encrypted: Cell::new(false),
+            known: RefCell::new(HashMap::new()),
+            manifests: RefCell::new(HashMap::new()),
         }
     }
 
@@ -569,6 +621,27 @@ impl<'a> Remote<'a> {
         } else {
             format!("{}/{path}", self.prefix)
         }
+    }
+
+    /// Where a file is stored in the repository (`.age` added in an encrypted folder).
+    pub fn stored_path(&self, path: &str) -> String {
+        if self.encrypted.get() {
+            format!("{}.age", self.repo_path(path))
+        } else {
+            self.repo_path(path)
+        }
+    }
+
+    fn manifest(&self, sha: &str) -> Result<Manifest> {
+        if let Some(m) = self.manifests.borrow().get(sha) {
+            return Ok(m.clone());
+        }
+        let m: Manifest =
+            serde_json::from_slice(&self.gh.blob(&self.full, sha)?).context("invalid manifest")?;
+        self.manifests
+            .borrow_mut()
+            .insert(sha.to_string(), m.clone());
+        Ok(m)
     }
 
     pub fn state(&self) -> Result<RemoteState> {
@@ -585,30 +658,72 @@ impl<'a> Remote<'a> {
         } else {
             format!("{}/", self.prefix)
         };
-        for e in self.gh.tree(&self.full, &tree)? {
-            if e.kind != "blob" {
-                continue;
+        let entries: Vec<TreeEntry> = self
+            .gh
+            .tree(&self.full, &tree)?
+            .into_iter()
+            .filter(|e| e.kind == "blob")
+            .collect();
+        let find = |p: &str| {
+            let p = format!("{strip}{p}");
+            entries.iter().find(|e| e.path == p).map(|e| e.sha.clone())
+        };
+        s.key_blob = find(KEY_FILE);
+        s.encrypted = s.key_blob.is_some();
+        if s.encrypted {
+            if let Some(m) = find(MANIFEST_FILE) {
+                s.manifest = self.manifest(&m)?;
             }
-            s.blobs.insert(e.sha.clone());
+        }
+        for e in entries {
             if e.path == META_PATH {
                 s.has_meta = true;
             }
+            if !s.encrypted {
+                s.blobs.insert(e.sha.clone());
+            }
             // Symlinks are not synced, nor is nubes' own metadata.
-            if e.mode == "120000"
-                || !e.path.starts_with(&strip)
-                || (strip.is_empty() && e.path.starts_with(".nubes/"))
-            {
+            if e.mode == "120000" || !e.path.starts_with(&strip) {
                 continue;
             }
+            let rel = &e.path[strip.len()..];
+            if rel.starts_with(OWN_DIR) {
+                continue;
+            }
+            if !s.encrypted {
+                s.files.insert(
+                    rel.to_string(),
+                    RemoteFile {
+                        sha: e.sha,
+                        size: e.size.unwrap_or(0),
+                        mode: e.mode,
+                    },
+                );
+                continue;
+            }
+            let sealed = rel
+                .strip_suffix(".age")
+                .and_then(|p| s.manifest.files.get(p).map(|m| (p, m)))
+                .filter(|(_, m)| m.blob_sha == e.sha);
+            let Some((path, m)) = sealed else {
+                s.foreign.push(rel.to_string());
+                continue;
+            };
+            s.blobs.insert(m.plain_sha.clone());
+            s.stored.insert(m.plain_sha.clone(), e.sha.clone());
+            self.known
+                .borrow_mut()
+                .insert(m.plain_sha.clone(), (e.sha.clone(), m.size));
             s.files.insert(
-                e.path[strip.len()..].to_string(),
+                path.to_string(),
                 RemoteFile {
-                    sha: e.sha,
-                    size: e.size.unwrap_or(0),
+                    sha: m.plain_sha.clone(),
+                    size: m.size,
                     mode: e.mode,
                 },
             );
         }
+        self.encrypted.set(s.encrypted);
         s.tree = Some(tree);
         Ok(s)
     }
@@ -635,22 +750,196 @@ impl<'a> Remote<'a> {
         Ok(true)
     }
 
-    /// Commits `changes` (nubes paths) on `head`/`tree`; `RefMoved` if the branch moved.
-    pub fn commit(
-        &self,
-        changes: &[Change],
-        message: &str,
-        head: &str,
-        tree: &str,
-    ) -> Result<String> {
-        let changes: Vec<Change> = changes
-            .iter()
-            .map(|c| Change {
-                path: self.repo_path(&c.path),
-                ..c.clone()
-            })
-            .collect();
-        let new_tree = self.gh.create_tree(&self.full, tree, &changes)?;
+    pub fn set_cipher(&self, c: Cipher) {
+        *self.cipher.borrow_mut() = Some(c);
+    }
+
+    /// Makes sure an encrypted folder can be read and written: the key this
+    /// device keeps, or the passphrase (then the key is kept for next time).
+    pub fn unlock(&self, state: &RemoteState) -> Result<()> {
+        if !state.encrypted || self.cipher.borrow().is_some() {
+            return Ok(());
+        }
+        if let Some(secret) = crate::creds::load_key(&self.full, &self.prefix)? {
+            self.set_cipher(Cipher::parse(&secret)?);
+            return Ok(());
+        }
+        let key_blob = state.key_blob.as_deref().context("no key in this folder")?;
+        let key_file = self.gh.blob(&self.full, key_blob)?;
+        let pass = crate::crypt::passphrase("Passphrase of this encrypted folder: ", false)?;
+        let c = Cipher::unlock(&key_file, &pass)?;
+        crate::creds::store_key(&self.full, &self.prefix, &c.secret())?;
+        self.set_cipher(c);
+        Ok(())
+    }
+
+    /// Makes a new, empty folder encrypted: its key, locked with `passphrase`.
+    pub fn init_encryption(&self, passphrase: &str) -> Result<Cipher> {
+        let mut state = self.state()?;
+        if self.ensure_meta(&state)? {
+            state = self.state()?;
+        }
+        if state.encrypted {
+            bail!("this folder is already encrypted");
+        }
+        if !state.files.is_empty() {
+            bail!(
+                "this folder already has {} plain file(s): encryption is for a new folder (a new repository, or repo:new-folder)",
+                state.files.len()
+            );
+        }
+        let c = Cipher::generate();
+        let meta = json!({
+            "format": "nubes",
+            "version": AGE_FORMAT_VERSION,
+            "mode": "age",
+            "recipient": c.recipient(),
+            "createdAt": crate::util::now_rfc3339(),
+        });
+        let meta = format!("{}\n", serde_json::to_string_pretty(&meta)?);
+        let changes = [
+            Change {
+                path: KEY_FILE.into(),
+                mode: "100644".into(),
+                sha: Some(self.gh.create_blob(&self.full, &c.lock(passphrase)?)?),
+            },
+            Change {
+                path: FOLDER_META.into(),
+                mode: "100644".into(),
+                sha: Some(self.gh.create_blob(&self.full, meta.as_bytes())?),
+            },
+        ];
+        self.commit(&changes, "nubes: encrypt this folder", &state)?;
+        crate::creds::store_key(&self.full, &self.prefix, &c.secret())?;
+        Ok(c)
+    }
+
+    /// Whether `sha` (plain) is already stored.
+    pub fn has(&self, sha: &str, state: &RemoteState) -> bool {
+        if state.encrypted {
+            state.stored.contains_key(sha) || self.known.borrow().contains_key(sha)
+        } else {
+            state.blobs.contains(sha)
+        }
+    }
+
+    /// Stores content whose plain id is `sha` (encrypted in an encrypted folder).
+    pub fn put(&self, data: &[u8], sha: &str, state: &RemoteState) -> Result<()> {
+        if self.has(sha, state) {
+            return Ok(());
+        }
+        if !state.encrypted {
+            let got = self.gh.create_blob(&self.full, data)?;
+            if got != sha {
+                bail!("GitHub stored {got}, expected {sha}");
+            }
+            return Ok(());
+        }
+        let sealed = self.with_cipher(|c| c.encrypt(data))?;
+        let blob = self.gh.create_blob(&self.full, &sealed)?;
+        self.known
+            .borrow_mut()
+            .insert(sha.to_string(), (blob, data.len() as u64));
+        Ok(())
+    }
+
+    /// The plain content whose id is `sha`.
+    pub fn get(&self, sha: &str) -> Result<Vec<u8>> {
+        if !self.encrypted.get() {
+            return self.gh.blob(&self.full, sha);
+        }
+        let stored = self
+            .known
+            .borrow()
+            .get(sha)
+            .map(|(b, _)| b.clone())
+            .with_context(|| format!("no encrypted content for {sha}"))?;
+        let data = self.gh.blob(&self.full, &stored)?;
+        self.with_cipher(|c| c.decrypt(&data))
+    }
+
+    fn with_cipher<T>(&self, f: impl FnOnce(&Cipher) -> Result<T>) -> Result<T> {
+        match self.cipher.borrow().as_ref() {
+            Some(c) => f(c),
+            None => bail!("this folder is encrypted and locked: run `nubes unlock`"),
+        }
+    }
+
+    /// The plain id of `path` at commit `rev`, if it existed there.
+    pub fn version_at(&self, path: &str, rev: &str) -> Result<Option<String>> {
+        if !self.encrypted.get() {
+            return self.gh.file_at(&self.full, &self.repo_path(path), rev);
+        }
+        let Some(m) = self
+            .gh
+            .file_at(&self.full, &self.repo_path(MANIFEST_FILE), rev)?
+        else {
+            return Ok(None);
+        };
+        let Some(e) = self.manifest(&m)?.files.get(path).cloned() else {
+            return Ok(None);
+        };
+        self.known
+            .borrow_mut()
+            .insert(e.plain_sha.clone(), (e.blob_sha, e.size));
+        Ok(Some(e.plain_sha))
+    }
+
+    /// Commits `changes` (nubes paths, plain ids) on `state`; `RefMoved` if the branch moved.
+    /// In an encrypted folder, files go to `<path>.age` and the manifest follows in the same commit.
+    pub fn commit(&self, changes: &[Change], message: &str, state: &RemoteState) -> Result<String> {
+        let head = state.head.as_deref().context("empty repository")?;
+        let tree = state.tree.as_deref().context("empty repository")?;
+        let mut out: Vec<Change> = Vec::new();
+        if state.encrypted {
+            let mut manifest = state.manifest.clone();
+            manifest.version = 1;
+            for c in changes {
+                let path = format!("{}.age", self.repo_path(&c.path));
+                match &c.sha {
+                    None => {
+                        manifest.files.remove(&c.path);
+                        out.push(Change { path, ..c.clone() });
+                    }
+                    Some(plain) => {
+                        let (blob, size) = self
+                            .known
+                            .borrow()
+                            .get(plain)
+                            .cloned()
+                            .with_context(|| format!("{} was not uploaded", c.path))?;
+                        manifest.files.insert(
+                            c.path.clone(),
+                            Sealed {
+                                plain_sha: plain.clone(),
+                                size,
+                                blob_sha: blob.clone(),
+                            },
+                        );
+                        out.push(Change {
+                            path,
+                            mode: c.mode.clone(),
+                            sha: Some(blob),
+                        });
+                    }
+                }
+            }
+            let text = format!("{}\n", serde_json::to_string_pretty(&manifest)?);
+            out.push(Change {
+                path: self.repo_path(MANIFEST_FILE),
+                mode: "100644".into(),
+                sha: Some(self.gh.create_blob(&self.full, text.as_bytes())?),
+            });
+        } else {
+            out = changes
+                .iter()
+                .map(|c| Change {
+                    path: self.repo_path(&c.path),
+                    ..c.clone()
+                })
+                .collect();
+        }
+        let new_tree = self.gh.create_tree(&self.full, tree, &out)?;
         if new_tree == tree {
             return Ok(head.to_string());
         }

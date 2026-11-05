@@ -3,7 +3,7 @@ import { useSignal } from "@preact/signals";
 import { useEffect } from "preact/hooks";
 import type { RepoInfo } from "../github/client";
 import { normalizePrefix } from "../github/repo";
-import { chooseRepo, describeError, session, signIn, signOut } from "../state";
+import { chooseRepo, createEncrypted, describeError, session, signIn, signOut } from "../state";
 import { NEW_REPO_URL, TOKEN_URL, TOKENS_URL } from "../store/settings";
 import { IconCloud } from "./icons";
 
@@ -117,6 +117,9 @@ export function PickRepo() {
   const manual = useSignal("");
   const prefix = useSignal("");
   const query = useSignal("");
+  const encrypt = useSignal(false);
+  const pass = useSignal("");
+  const pass2 = useSignal("");
   const error = useSignal<string | null>(null);
   const pending = useSignal(false);
   const s = session.value;
@@ -145,11 +148,20 @@ export function PickRepo() {
           `The token can read ${info.fullName} but not write to it. On GitHub, edit the token: under Permissions, set Contents to “Read and write”.`,
         );
       }
-      await chooseRepo({
+      const next = {
         repo: info.fullName,
         branch: info.defaultBranch,
         prefix: normalizePrefix(prefix.value),
-      });
+      };
+      if (!encrypt.value) await chooseRepo(next);
+      else {
+        if (pass.value.length < 10)
+          throw new Error(
+            "Choose a passphrase of at least 10 characters (several random words are best).",
+          );
+        if (pass.value !== pass2.value) throw new Error("The two passphrases differ.");
+        await createEncrypted(next, pass.value);
+      }
     } catch (err) {
       error.value = describeError(err);
     } finally {
@@ -274,6 +286,44 @@ export function PickRepo() {
               prefix.value = e.currentTarget.value;
             }}
           />
+          <label class="check">
+            <input
+              type="checkbox"
+              checked={encrypt.value}
+              onChange={(e) => {
+                encrypt.value = e.currentTarget.checked;
+              }}
+            />
+            Encrypt the files end to end (a new, empty repository or folder)
+          </label>
+          {encrypt.value && (
+            <>
+              <label for="new-pass">Passphrase (10 characters or more)</label>
+              <input
+                id="new-pass"
+                type="password"
+                autocomplete="new-password"
+                value={pass.value}
+                onInput={(e) => {
+                  pass.value = e.currentTarget.value;
+                }}
+              />
+              <label for="new-pass2">The passphrase again</label>
+              <input
+                id="new-pass2"
+                type="password"
+                autocomplete="new-password"
+                value={pass2.value}
+                onInput={(e) => {
+                  pass2.value = e.currentTarget.value;
+                }}
+              />
+              <p class="fine">
+                Every device asks for it once. Nobody can reset it: without it, the files cannot be
+                read back. GitHub sees the file names and sizes, not their contents.
+              </p>
+            </>
+          )}
         </form>
         {error.value && (
           <p class="error" role="alert">

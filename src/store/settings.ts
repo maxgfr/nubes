@@ -66,6 +66,38 @@ export function saveToken(token: string | null, remember = false): void {
   if (token) storage(remember ? "local" : "session")?.setItem(TOKEN_KEY, token);
 }
 
+const KEY_PREFIX = "nubes.key.v1:";
+const keyName = (l: Link) => `${KEY_PREFIX}${l.repo}#${l.branch}#${l.prefix}`;
+
+/**
+ * The key of an encrypted folder, kept like the token: in localStorage when
+ * the user stays signed in, else for this tab only. (The key, not the
+ * passphrase: the passphrase may be used elsewhere, and scrypt runs once.)
+ */
+export function loadKey(l: Link): string | null {
+  return storage("local")?.getItem(keyName(l)) ?? storage("session")?.getItem(keyName(l)) ?? null;
+}
+
+export function saveKey(l: Link, secret: string, remember: boolean): void {
+  storage("local")?.removeItem(keyName(l));
+  storage("session")?.removeItem(keyName(l));
+  storage(remember ? "local" : "session")?.setItem(keyName(l), secret);
+}
+
+export function forgetKey(l: Link): void {
+  storage("local")?.removeItem(keyName(l));
+  storage("session")?.removeItem(keyName(l));
+}
+
+/** On sign-out: every key goes with the token. */
+export function forgetKeys(): void {
+  for (const kind of ["local", "session"] as const) {
+    const s = storage(kind);
+    if (!s) continue;
+    for (const k of Object.keys(s)) if (k.startsWith(KEY_PREFIX)) s.removeItem(k);
+  }
+}
+
 /** A name for this browser, used in commit messages and conflict copies. */
 export function deviceName(): string {
   const s = storage("local");

@@ -7,9 +7,24 @@
 - **Your token, your scope.** Use a fine-grained token limited to one
   repository with *Contents: Read and write*. It can read and write that
   repository's contents and nothing else.
-- **Files are not encrypted** by nubes (version 1). Keep the repository
-  private. Anyone with access to the repository, and GitHub itself, can read
-  the files. End-to-end encryption is planned as a repository mode.
+- **Plain folders are not encrypted.** Keep the repository private: anyone
+  with access to it, and GitHub itself, can read the files.
+- **Encrypted folders** (`nubes init owner/repo --encrypt`, or "Encrypt the
+  files end to end" in the web app) store each file's content encrypted with
+  [age](https://age-encryption.org) (X25519, ChaCha20-Poly1305). GitHub then
+  sees the file names, sizes, dates and commit messages, not the contents. The
+  folder's key is in the repository, encrypted with your passphrase (scrypt):
+  the passphrase's strength is the folder's. Nobody can reset it.
+- Encryption protects the contents, not the folder's shape: someone who can
+  write to the repository cannot read the files, but can delete them, or swap
+  which encrypted file a name points to (`.nubes/manifest.json` is not
+  signed). The history keeps every earlier version. A replaced `key.age` is
+  not used by devices that already keep the key, and a new device would
+  refuse it ("wrong passphrase").
+- A device keeps the folder's key, not the passphrase: the CLI in the macOS
+  Keychain or a 0600 file, the web app like its token. Anyone with access to
+  that device's storage can read the folder: `nubes lock` (CLI) or "Forget
+  the key here" (web) removes it, and signing out of the web app does too.
 
 ## Web app
 
@@ -23,8 +38,9 @@
 - The page refuses to run inside a frame.
 - Offline copies stay in the browser's storage for this site: the last
   listing and files added offline in IndexedDB, the files of folders marked
-  "Keep offline" in Cache Storage. Signing out erases the listing and the
-  offline files; files added offline and not sent yet stay until they are.
+  "Keep offline" in Cache Storage (decrypted, for an encrypted folder).
+  Signing out erases the listing and the offline files; files added offline
+  and not sent yet stay until they are.
 
 ## CLI
 

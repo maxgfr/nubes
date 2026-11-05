@@ -21,6 +21,11 @@ nubes init owner/repo          # or owner/repo:sub/folder, --branch name
 
 The token can also come from `NUBES_TOKEN` or from `gh auth token`.
 
+`nubes init owner/repo --encrypt` creates a folder encrypted end to end (new,
+empty folders only). It asks for a passphrase. In an encrypted folder, run
+`nubes unlock` once per device (or set `NUBES_PASSPHRASE`); never print or
+store the passphrase yourself.
+
 ## Everyday commands
 
 | Command | What it does |
