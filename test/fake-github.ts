@@ -38,6 +38,8 @@ export interface FakeGitHub {
   tokens: Set<string>;
   /** Tokens that can read but not write (fine-grained token with Contents: Read-only). */
   readOnly: Set<string>;
+  /** Conditional requests answered 304. */
+  stats: { notModified: number };
 }
 
 const enc = new TextEncoder();
@@ -65,6 +67,7 @@ export function createFakeGitHub(opts: { login?: string; tokens?: string[] } = {
   const login = opts.login ?? "octo";
   const tokens = new Set(opts.tokens ?? ["test-token"]);
   const readOnly = new Set<string>();
+  const stats = { notModified: 0 };
   const repos = new Map<string, Repo>();
   const log: string[] = [];
   let refHook: (() => void) | null = null;
@@ -196,11 +199,20 @@ export function createFakeGitHub(opts: { login?: string; tokens?: string[] } = {
     [
       "GET",
       /^\/repos\/[^/]+\/[^/]+\/git\/ref\/heads\/(.+)$/,
-      (r, m) => {
+      (r, m, req) => {
         if (!r) return err(404, "Not Found");
         if (r.refs.size === 0) return err(409, "Git Repository is empty.");
         const sha = r.refs.get(decodeURIComponent(m[1] as string));
-        return sha ? json({ object: { sha, type: "commit" } }) : err(404, "Not Found");
+        if (!sha) return err(404, "Not Found");
+        // Conditional request: an unchanged ref answers 304 (free on GitHub).
+        const etag = `"${sha}"`;
+        if (req.headers.get("if-none-match") === etag) {
+          stats.notModified++;
+          return new Response(null, { status: 304, headers: { etag } });
+        }
+        const res = json({ object: { sha, type: "commit" } });
+        res.headers.set("etag", etag);
+        return res;
       },
     ],
     [
@@ -473,6 +485,7 @@ export function createFakeGitHub(opts: { login?: string; tokens?: string[] } = {
     log,
     tokens,
     readOnly,
+    stats,
     addRepo(full, o = {}) {
       const [owner, name] = full.split("/") as [string, string];
       repos.set(full.toLowerCase(), {

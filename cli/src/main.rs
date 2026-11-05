@@ -4,6 +4,7 @@ mod config;
 mod creds;
 mod github;
 mod scan;
+mod service;
 mod sync;
 mod util;
 
@@ -89,9 +90,16 @@ enum Cmd {
     },
     /// Sync now, then again whenever either side changes.
     Watch {
-        /// Seconds between checks.
-        #[arg(long, default_value_t = 30)]
+        /// Seconds between checks of the repository (free when it did not
+        /// change). Local changes are picked up within seconds.
+        #[arg(long, default_value_t = 15)]
         interval: u64,
+    },
+    /// Keep this folder in sync in the background, from every login
+    /// (a LaunchAgent on macOS, a systemd user unit on Linux).
+    Service {
+        #[command(subcommand)]
+        action: ServiceCmd,
     },
     /// List the files in the repository.
     Ls {
@@ -115,6 +123,20 @@ enum Cmd {
     Skill,
     /// Check the engine against its test vectors.
     Selftest,
+}
+
+#[derive(Subcommand)]
+enum ServiceCmd {
+    /// Run `nubes watch` for this folder at every login, and start it now.
+    Install {
+        /// Print the service file instead of installing it.
+        #[arg(long)]
+        print: bool,
+    },
+    /// Whether the service runs, and its last log lines.
+    Status,
+    /// Stop the service and remove it.
+    Uninstall,
 }
 
 fn client(api: Option<String>) -> Result<GitHub> {
@@ -217,7 +239,26 @@ fn run(cli: Cli) -> Result<()> {
             let gh = client(cli.api)?;
             let c = &folder.config;
             let remote = Remote::new(&gh, &c.repo, &c.branch, &c.prefix);
-            sync::watch(&folder, &remote, Duration::from_secs(interval.max(5)))?;
+            sync::watch(&folder, &remote, Duration::from_secs(interval.max(2)))?;
+        }
+        Cmd::Service { action } => {
+            let folder = Folder::find(&start_dir(&cli.dir)?)?;
+            let spec = service::Spec::new(&folder, cli.api)?;
+            match action {
+                ServiceCmd::Install { print: true } => {
+                    print!("{}", service::contents(&folder.root, &spec));
+                }
+                ServiceCmd::Install { print: false } => {
+                    // The service has no terminal: the token must be stored, not typed.
+                    let (_, source) = creds::token()?;
+                    if matches!(source, creds::Source::Env) && creds::load()?.is_none() {
+                        bail!("the service cannot see NUBES_TOKEN: run `nubes login` first to store the token");
+                    }
+                    service::install(&folder, &spec)?;
+                }
+                ServiceCmd::Status => service::status(&folder, &spec)?,
+                ServiceCmd::Uninstall => service::uninstall(&folder)?,
+            }
         }
         Cmd::Ls { folder: sub } => {
             let folder = Folder::find(&start_dir(&cli.dir)?)?;

@@ -80,12 +80,15 @@ cd ~/Documents/cloud
 nubes init you/nubes-files       # or you/repo:sub/folder, --branch name, --device name
 nubes status                     # what a sync would do
 nubes sync                       # two-way, one commit
-nubes watch                      # sync every 30 s while running (--interval 10)
+nubes watch                      # sync within seconds of a change, while running
+nubes service install            # the same in the background, from every login
 ```
 
 | Command | |
 |---|---|
 | `nubes push` / `nubes pull` | One direction only (`pull` never loses an unpushed edit: it keeps a conflict copy) |
+| `nubes watch [--interval 15]` | Syncs 2 s after a local change, and when the repository changes (checked every 15 s with an ETag: an unchanged repository costs no rate limit) |
+| `nubes service install` / `status` / `uninstall` | Runs `nubes watch` for this folder from every login: a LaunchAgent on macOS (log in `.nubes/watch.log`), a `systemd --user` unit on Linux (`journalctl --user -u nubes-…`). Needs a stored token (`nubes login`) |
 | `nubes ls [folder]` | List the files in the repository |
 | `nubes log [path]` | Commits that changed a path |
 | `nubes restore <path> --at <commit>` | Write an older version into the folder (then `nubes sync`) |
@@ -109,7 +112,8 @@ Teaches coding agents to use the `nubes` CLI ([`skills/nubes/SKILL.md`](skills/n
 - 100 MB per file (GitHub's limit for blobs; Git LFS is not reachable from a
   browser). GitHub recommends keeping a repository under a few GB.
 - About 5,000 API requests an hour per token. Syncing an unchanged folder
-  costs one request; a change costs about three plus one per new file.
+  costs one request (none for `nubes watch`, whose checks are conditional);
+  a change costs about three plus one per new file.
 - Empty folders do not exist in git: a folder appears once it has a file.
 
 ## Development

@@ -12,12 +12,17 @@ import {
   link,
   loading,
   online,
+  pendingCount,
+  pinStatus,
+  pins,
   refresh,
   remoteState,
   remove,
+  setPinned,
   startPolling,
   upload,
 } from "../state";
+import { isPinned } from "../store/offline";
 import { canPickFolder, filesFromDrop, filesFromInput } from "./drop";
 import { humanSize, kindOf } from "./format";
 import {
@@ -93,18 +98,35 @@ function SyncBadge() {
       ? busy.value
       : loading.value
         ? "Checking…"
-        : lastChecked.value
-          ? "Up to date"
-          : "Connecting…";
-  const tone = !online.value ? "warn" : busy.value || loading.value ? "busy" : "ok";
+        : pinStatus.value
+          ? pinStatus.value
+          : lastChecked.value
+            ? "Up to date"
+            : "Connecting…";
+  const tone = !online.value
+    ? "warn"
+    : busy.value || loading.value || pinStatus.value
+      ? "busy"
+      : "ok";
+  const waiting = pendingCount.value;
   return (
-    <span
-      class={`badge badge-${tone}`}
-      title={lastChecked.value ? `Checked ${new Date(lastChecked.value).toLocaleTimeString()}` : ""}
-    >
-      <span class="dot" />
-      {label}
-    </span>
+    <>
+      <span
+        class={`badge badge-${tone}`}
+        title={
+          lastChecked.value ? `Checked ${new Date(lastChecked.value).toLocaleTimeString()}` : ""
+        }
+      >
+        <span class="dot" />
+        {label}
+      </span>
+      {waiting > 0 && (
+        <span class="badge badge-warn" title="Added offline, sent when the network is back">
+          <span class="dot" />
+          {waiting} waiting to upload
+        </span>
+      )}
+    </>
   );
 }
 
@@ -130,9 +152,27 @@ function RowMenu(props: { row: Row; open: (d: Dialog) => void; close: () => void
           </button>
         </>
       ) : (
-        <button type="button" role="menuitem" onClick={act(() => void downloadZip(row.path))}>
-          <IconDownload size={18} /> Download as zip
-        </button>
+        <>
+          <button type="button" role="menuitem" onClick={act(() => void downloadZip(row.path))}>
+            <IconDownload size={18} /> Download as zip
+          </button>
+          {row.count > 0 &&
+            (pins.value.includes(row.path) ? (
+              <button type="button" role="menuitem" onClick={act(() => setPinned(row.path, false))}>
+                <IconCloud size={18} /> Stop keeping offline
+              </button>
+            ) : (
+              !isPinned(pins.value, row.path) && (
+                <button
+                  type="button"
+                  role="menuitem"
+                  onClick={act(() => setPinned(row.path, true))}
+                >
+                  <IconCloud size={18} /> Keep offline
+                </button>
+              )
+            ))}
+        </>
       )}
       {row.count > 0 || row.kind === "file" ? (
         <button
@@ -334,6 +374,11 @@ export function Explorer() {
                 >
                   <FileIcon row={row} />
                   <span class="row-name">{row.name}</span>
+                  {row.kind === "folder" && isPinned(pins.value, row.path) && (
+                    <span class="tag" title="Its files open without a network">
+                      offline
+                    </span>
+                  )}
                   <span class="row-meta">
                     {row.kind === "folder"
                       ? row.count === 0

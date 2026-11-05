@@ -103,7 +103,8 @@ export class GitHub {
           cache: "no-store",
         });
       } catch (err) {
-        if (idempotent && attempt < 3) {
+        // Offline for sure: fail now rather than after 7 s of retries.
+        if (idempotent && attempt < 3 && globalThis.navigator?.onLine !== false) {
           await this.#sleep(1000 * 2 ** attempt);
           continue;
         }

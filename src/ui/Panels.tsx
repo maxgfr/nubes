@@ -354,8 +354,12 @@ export function Settings(props: { onClose: () => void }) {
           </li>
           <li>
             <b>Mac, Linux:</b> <code>brew install maxgfr/tap/nubes</code>, then{" "}
-            <code>nubes init {l?.repo ?? "owner/repo"}</code> and <code>nubes watch</code> in the
-            folder to keep in sync.
+            <code>nubes init {l?.repo ?? "owner/repo"}</code> and <code>nubes service install</code>{" "}
+            in the folder: it stays in sync in the background.
+          </li>
+          <li>
+            <b>Without a network:</b> files you add wait on this device and are sent when it comes
+            back. A folder marked “Keep offline” (in its menu) opens without a network.
           </li>
           <li>
             <b>A folder in the Files app (iPad):</b> Safari cannot keep a folder in sync. The
@@ -377,14 +381,18 @@ const STATUS: Record<string, string> = {
   done: "Saved",
   unchanged: "Unchanged",
   skipped: "Skipped",
+  pending: "Waiting for the network",
   error: "Failed",
 };
 
 export function UploadPanel() {
   const list = uploads.value;
   if (list.length === 0) return null;
-  const active = list.filter((u) => !["done", "unchanged", "skipped", "error"].includes(u.status));
+  const active = list.filter(
+    (u) => !["done", "unchanged", "skipped", "error", "pending"].includes(u.status),
+  );
   const failed = list.filter((u) => u.status === "error").length;
+  const waiting = list.filter((u) => u.status === "pending").length;
   return (
     <section class="uploads card" aria-live="polite">
       <header>
@@ -393,7 +401,9 @@ export function UploadPanel() {
             ? `Uploading ${list.length - active.length}/${list.length}`
             : failed > 0
               ? `${failed} upload${failed === 1 ? "" : "s"} failed`
-              : "All uploads saved"}
+              : waiting > 0
+                ? `Offline: ${waiting} file${waiting === 1 ? "" : "s"} will be sent when back online`
+                : "All uploads saved"}
         </b>
         {active.length === 0 && (
           <button type="button" class="btn small ghost" onClick={clearFinishedUploads}>

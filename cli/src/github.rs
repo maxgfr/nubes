@@ -84,6 +84,16 @@ pub struct Commit {
     pub author: String,
 }
 
+/// The answer to a conditional read of the branch.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Poll {
+    NotModified,
+    Changed {
+        head: Option<String>,
+        etag: Option<String>,
+    },
+}
+
 pub struct GitHub {
     agent: ureq::Agent,
     api: String,
@@ -241,6 +251,52 @@ impl GitHub {
             Err(e) if matches!(status_of(&e), Some(404 | 409)) => Ok(None),
             Err(e) => Err(e),
         }
+    }
+
+    /// The branch's commit, asked with the ETag of the previous answer: an
+    /// unchanged branch answers 304, which costs no rate limit. Falls back to
+    /// a plain `head` for anything unexpected.
+    pub fn head_if_changed(&self, full: &str, branch: &str, etag: Option<&str>) -> Result<Poll> {
+        let url = format!(
+            "{}/repos/{full}/git/ref/heads/{}",
+            self.api,
+            enc_ref(branch)
+        );
+        let mut req = self
+            .agent
+            .get(&url)
+            .header("accept", "application/vnd.github+json")
+            .header("authorization", &format!("Bearer {}", self.token))
+            .header("x-github-api-version", "2022-11-28");
+        if let Some(e) = etag {
+            req = req.header("if-none-match", e);
+        }
+        let Ok(mut res) = req.call() else {
+            return Ok(Poll::Changed {
+                head: self.head(full, branch)?,
+                etag: None,
+            });
+        };
+        let status = res.status().as_u16();
+        if status == 304 {
+            return Ok(Poll::NotModified);
+        }
+        if status == 200 {
+            let etag = res
+                .headers()
+                .get("etag")
+                .and_then(|v| v.to_str().ok())
+                .map(str::to_string);
+            let v: Value = res.body_mut().read_json()?;
+            return Ok(Poll::Changed {
+                head: v["object"]["sha"].as_str().map(str::to_string),
+                etag,
+            });
+        }
+        Ok(Poll::Changed {
+            head: self.head(full, branch)?,
+            etag: None,
+        })
     }
 
     pub fn commit_tree(&self, full: &str, commit: &str) -> Result<String> {
