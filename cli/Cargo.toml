@@ -1,6 +1,6 @@
 [package]
 name = "nubes-cli"
-version = "1.1.0"
+version = "1.2.0"
 description = "nubes CLI: sync a folder with a GitHub repository you own."
 edition.workspace = true
 rust-version.workspace = true
