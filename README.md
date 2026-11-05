@@ -122,8 +122,14 @@ Teaches coding agents to use the `nubes` CLI ([`skills/nubes/SKILL.md`](skills/n
 
 ## Limits
 
-- 100 MB per file (GitHub's limit for blobs; Git LFS is not reachable from a
-  browser). GitHub recommends keeping a repository under a few GB.
+- 100 MB per file (GitHub's limit for blobs), 32 KB less in an encrypted
+  folder (encryption adds a little). Larger files are skipped and reported,
+  never split. Git LFS (2 GB per file, but a 10 GB storage and bandwidth
+  quota) and release assets are not reachable from the browser, so nubes
+  does not use them.
+- GitHub recommends a repository under 1 GB, and strongly under 5 GB. Every
+  version counts. The web app shows the size, and `nubes status` warns past
+  1 GB.
 - About 5,000 API requests an hour per token. Syncing an unchanged folder
   costs one request (none for `nubes watch`, whose checks are conditional);
   a change costs about three plus one per new file.

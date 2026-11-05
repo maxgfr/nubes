@@ -46,7 +46,9 @@ store the passphrase yourself.
 - Deleted on one side but edited on the other: the edit wins.
 - `.nubesignore` (gitignore syntax) excludes files; `.nubes/`, `.git/` and
   `.DS_Store` are always excluded.
-- GitHub refuses files over 100 MB; nubes skips them and says so.
+- GitHub refuses files over 100 MB (32 KB less in an encrypted folder);
+  nubes skips them and says so, it never splits them. `nubes status` also
+  warns when the repository passes 1 GB (GitHub recommends under 5 GB).
 - Always run `nubes status` first when unsure, and never delete
   `.nubes/state.json` (it is the memory of the last sync; without it the
   next sync treats both sides as new and keeps conflict copies).

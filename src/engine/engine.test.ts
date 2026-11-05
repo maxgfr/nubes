@@ -12,6 +12,7 @@ import {
   isSafePath,
   loadEngineSync,
   MAX_BLOB,
+  MAX_ENCRYPTED_BLOB,
   type PlanInput,
   plan,
 } from "./index";
@@ -72,5 +73,6 @@ describe("engine helpers", () => {
 
   test("limits match the Rust constants", () => {
     expect(raw.maxBlobSize()).toBe(MAX_BLOB);
+    expect(raw.maxEncryptedBlobSize()).toBe(MAX_ENCRYPTED_BLOB);
   });
 });

@@ -13,6 +13,7 @@ import {
   isSafePath,
   loadEngine,
   MAX_BLOB,
+  MAX_ENCRYPTED_BLOB,
   plan,
   type Snapshot,
 } from "./engine";
@@ -534,7 +535,7 @@ function uploadNow(picked: { path: string; file: Blob }[], dir: string): Promise
             settle(it.id, { status: "skipped", note: "ignored" });
             continue;
           }
-          if (it.size > MAX_BLOB) {
+          if (it.size > (s.encrypted ? MAX_ENCRYPTED_BLOB : MAX_BLOB)) {
             settle(it.id, { status: "error", note: "over GitHub's 100 MB limit" });
             continue;
           }
@@ -759,6 +760,7 @@ export function saveText(
           remote: now,
           device: deviceName(),
           stamp: stamp(),
+          maxSize: s.encrypted ? MAX_ENCRYPTED_BLOB : MAX_BLOB,
         });
         const a = p.actions.find((x) => x.path === path);
         if (!a) return [];

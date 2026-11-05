@@ -12,6 +12,7 @@ import {
   readFileSync,
   realpathSync,
   rmSync,
+  truncateSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -233,6 +234,21 @@ describe.skipIf(!has)("nubes CLI", () => {
     await expect(nubes(c, ["init", repo, "--encrypt"], "x", "test-token", pass)).rejects.toThrow(
       /already encrypted/,
     );
+  });
+
+  test("a file that would pass 100 MB once encrypted is skipped, and the rest syncs", async () => {
+    const pass = { NUBES_PASSPHRASE: "correct horse battery staple" };
+    const a = folder();
+    write(a, "small.txt", "fits");
+    // Under 100 MiB in clear, over it once sealed by age.
+    write(a, "big.bin", "");
+    truncateSync(join(a, "big.bin"), 100 * 1024 * 1024 - 1024);
+    await nubes(a, ["init", repo, "--encrypt"], "laptop", "test-token", pass);
+    const out = await nubes(a, ["sync"]);
+    expect(out).toContain("big.bin: skipped, too large for GitHub");
+    const stored = Object.keys(fake.files(repo));
+    expect(stored).toContain("small.txt.age");
+    expect(stored).not.toContain("big.bin.age");
   });
 
   test("push and pull go one way; restore brings back an old version", async () => {

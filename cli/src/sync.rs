@@ -89,7 +89,9 @@ pub fn describe(a: &Action) -> String {
             if *upload { "" } else { " (local only)" }
         ),
         Action::Skip { path, reason } => match reason {
-            SkipReason::TooLarge => format!("- {path}: skipped, larger than GitHub's 100 MB limit"),
+            SkipReason::TooLarge => {
+                format!("- {path}: skipped, too large for GitHub (100 MB per file)")
+            }
             SkipReason::UnsafePath => format!("- {path}: skipped, not a valid path"),
             SkipReason::PathClash => {
                 format!("- {path}: skipped, a file and a folder share this path")
@@ -224,7 +226,8 @@ pub fn run(folder: &Folder, remote: &Remote<'_>, opts: &Options) -> Result<Outco
             ignore: ignore.clone(),
             device: folder.config.device.clone(),
             stamp: util::stamp(util::now_secs()),
-            max_size: None,
+            // Encryption adds a little: keep the sealed blob under the limit.
+            max_size: rstate.encrypted.then_some(nubes_core::GITHUB_MAX_ENCRYPTED),
         };
         let p = plan(&input).map_err(anyhow::Error::msg)?;
         if opts.dry_run {

@@ -283,7 +283,10 @@ fn run(cli: Cli) -> Result<()> {
                 println!("no key stored for this folder");
             }
         }
-        Cmd::Status => sync_cmd(&cli.dir, cli.api, Direction::Both, true)?,
+        Cmd::Status => {
+            sync_cmd(&cli.dir, cli.api.clone(), Direction::Both, true)?;
+            storage_warning(&cli.dir, cli.api)?;
+        }
         Cmd::Sync { dry_run } => sync_cmd(&cli.dir, cli.api, Direction::Both, dry_run)?,
         Cmd::Push { dry_run } => sync_cmd(&cli.dir, cli.api, Direction::Push, dry_run)?,
         Cmd::Pull { dry_run } => sync_cmd(&cli.dir, cli.api, Direction::Pull, dry_run)?,
@@ -425,6 +428,27 @@ fn sync_cmd(
         println!("done, commit {}", &c[..7.min(c.len())]);
     } else {
         println!("done");
+    }
+    Ok(())
+}
+
+/// Same thresholds as the web app's storage gauge: GitHub recommends a
+/// repository under 1 GB, and strongly under 5 GB.
+fn storage_warning(dir: &Option<PathBuf>, api: Option<String>) -> Result<()> {
+    const SOFT: u64 = 1024 * 1024 * 1024;
+    const HARD: u64 = 5 * SOFT;
+    let folder = Folder::find(&start_dir(dir)?)?;
+    let gh = client(api)?;
+    let repo = &folder.config.repo;
+    // Advice only: a failed check never fails `status`.
+    let Ok(size) = gh.repo_size(repo) else {
+        return Ok(());
+    };
+    let n = util::human_size(size);
+    if size >= HARD {
+        eprintln!("! {repo} is {n}, over 5 GB: GitHub may ask you to reduce it. Move large files to another repository.");
+    } else if size >= SOFT {
+        eprintln!("! {repo} is {n}, over 1 GB: GitHub recommends staying under 5 GB. Consider another repository for large files such as videos.");
     }
     Ok(())
 }

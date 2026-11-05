@@ -527,6 +527,8 @@ export function Toasts() {
 }
 
 const AUTO_MS = 30_000;
+/** Files already reported as too large to upload, during this visit. */
+const reportedTooLarge = new Set<string>();
 
 /** Two-way sync of a local folder (Chromium desktop only). */
 export function FolderSync() {
@@ -554,11 +556,22 @@ export function FolderSync() {
       });
       const s = res.plan.summary;
       const n = s.uploads + s.downloads + s.deleteLocal + s.deleteRemote + s.conflicts;
+      const big = res.plan.actions.flatMap((a) =>
+        a.op === "skip" && a.reason === "tooLarge" ? [a.path] : [],
+      );
+      // Automatic runs mention a too-large file once; a manual sync, always.
+      const fresh = big.filter((p) => ask || !reportedTooLarge.has(p));
+      for (const p of big) reportedTooLarge.add(p);
       if (n > 0 || ask)
         toast(
           n === 0
             ? `${l.name} is up to date`
             : `${l.name}: ${s.uploads} up, ${s.downloads} down, ${s.deleteLocal + s.deleteRemote} deleted${s.conflicts ? `, ${s.conflicts} conflict copies` : ""}`,
+        );
+      if (fresh.length > 0)
+        toast(
+          `Not uploaded, over GitHub's 100 MB per-file limit: ${fresh.slice(0, 3).map(basename).join(", ")}${fresh.length > 3 ? ` and ${fresh.length - 3} more` : ""}`,
+          "error",
         );
       linked.value = { ...l };
       if (res.committed || s.downloads > 0) {
