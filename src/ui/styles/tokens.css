@@ -1,0 +1,68 @@
+/* Design tokens. Light by default, dark follows the system. */
+:root {
+  color-scheme: light dark;
+
+  --bg: oklch(0.975 0.004 250);
+  --surface: oklch(1 0 0);
+  --surface-2: oklch(0.955 0.006 250);
+  --surface-3: oklch(0.92 0.008 250);
+  --text: oklch(0.23 0.015 255);
+  --muted: oklch(0.5 0.015 255);
+  --faint: oklch(0.66 0.012 255);
+  --line: oklch(0.23 0.02 255 / 0.09);
+  --line-strong: oklch(0.23 0.02 255 / 0.16);
+
+  --accent: oklch(0.56 0.17 258);
+  --accent-hover: oklch(0.5 0.17 258);
+  --accent-soft: oklch(0.56 0.17 258 / 0.1);
+  --on-accent: oklch(0.99 0 0);
+  --folder: oklch(0.72 0.12 75);
+  --ok: oklch(0.6 0.13 155);
+  --warn: oklch(0.68 0.14 70);
+  --danger: oklch(0.56 0.19 27);
+  --danger-soft: oklch(0.56 0.19 27 / 0.1);
+
+  --shadow-sm: 0 1px 2px oklch(0.2 0.02 255 / 0.06);
+  --shadow-md: 0 0 0 1px var(--line), 0 8px 24px oklch(0.2 0.03 255 / 0.1);
+  --shadow-lg: 0 0 0 1px var(--line), 0 24px 60px oklch(0.2 0.03 255 / 0.18);
+
+  --radius-sm: 6px;
+  --radius: 10px;
+  --radius-lg: 14px;
+
+  --font:
+    ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
+
+  --ease: cubic-bezier(0.2, 0, 0, 1);
+  --fast: 120ms;
+  --med: 200ms;
+
+  /* Touch targets: comfortable on an iPad. */
+  --tap: 44px;
+  --safe-top: env(safe-area-inset-top, 0px);
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: oklch(0.18 0.01 255);
+    --surface: oklch(0.215 0.012 255);
+    --surface-2: oklch(0.25 0.013 255);
+    --surface-3: oklch(0.29 0.014 255);
+    --text: oklch(0.94 0.006 255);
+    --muted: oklch(0.72 0.012 255);
+    --faint: oklch(0.56 0.012 255);
+    --line: oklch(1 0 0 / 0.08);
+    --line-strong: oklch(1 0 0 / 0.15);
+    --accent: oklch(0.7 0.14 258);
+    --accent-hover: oklch(0.76 0.13 258);
+    --accent-soft: oklch(0.7 0.14 258 / 0.16);
+    --on-accent: oklch(0.18 0.03 258);
+    --folder: oklch(0.78 0.11 78);
+    --danger: oklch(0.7 0.16 27);
+    --danger-soft: oklch(0.7 0.16 27 / 0.16);
+    --shadow-md: 0 0 0 1px var(--line), 0 8px 24px oklch(0 0 0 / 0.4);
+    --shadow-lg: 0 0 0 1px var(--line), 0 24px 60px oklch(0 0 0 / 0.55);
+  }
+}

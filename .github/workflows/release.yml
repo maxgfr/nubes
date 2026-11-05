@@ -1,0 +1,125 @@
+name: Release
+
+# Publishes the nubes CLI after CI passes on main: semantic-release reads the
+# conventional commits since the last cli-v* tag, and any fix/feat/perf or
+# breaking change releases a new version (tag cli-v<version>, with the four
+# binaries and SHA256SUMS that the Homebrew tap downloads).
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+env:
+  SEMANTIC_RELEASE: >-
+    npx --yes
+    -p semantic-release@25.0.9
+    -p @semantic-release/exec@7.1.0
+    -p @semantic-release/github@12.0.10
+    -p conventional-changelog-conventionalcommits@9.3.1
+    semantic-release
+
+jobs:
+  version:
+    name: Next version
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.event == 'push' &&
+       github.event.workflow_run.head_repository.full_name == github.repository)
+    runs-on: ubuntu-latest
+    permissions:
+      # semantic-release checks it could push to main, even in a dry run.
+      contents: write
+    outputs:
+      version: ${{ steps.next.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+      - id: next
+        env:
+          # GITHUB_TOKEN, not GH_TOKEN: semantic-release only adds the
+          # x-access-token: prefix that git needs for this token to GITHUB_TOKEN.
+          GITHUB_TOKEN: ${{ github.token }}
+        run: $SEMANTIC_RELEASE --dry-run
+
+  build:
+    name: Build ${{ matrix.target }}
+    needs: version
+    if: needs.version.outputs.version != ''
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - { target: aarch64-apple-darwin, os: macos-14 }
+          - { target: x86_64-apple-darwin, os: macos-14 }
+          - { target: x86_64-unknown-linux-gnu, os: ubuntu-24.04 }
+          - { target: aarch64-unknown-linux-gnu, os: ubuntu-24.04-arm }
+    runs-on: ${{ matrix.os }}
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+          persist-credentials: false
+      - run: scripts/cli-version.sh "$VERSION"
+      - run: rustup toolchain install stable --profile minimal --target ${{ matrix.target }} && rustup default stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: ${{ matrix.target }}
+      - run: cargo build --release --locked --target ${{ matrix.target }} -p nubes-cli
+      - name: Package
+        shell: bash
+        run: |
+          cp "target/${{ matrix.target }}/release/nubes" "nubes-${{ matrix.target }}"
+          out=$(./nubes-${{ matrix.target }} --version)
+          echo "$out"
+          [[ "$out" == *"$VERSION"* ]] || { echo "the binary reports '$out', expected $VERSION"; exit 1; }
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: nubes-${{ matrix.target }}
+          path: nubes-${{ matrix.target }}
+          if-no-files-found: error
+
+  release:
+    name: Publish
+    needs: [version, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: nubes-*
+          merge-multiple: true
+      - run: sha256sum nubes-* > SHA256SUMS && cat SHA256SUMS
+      # Commits the version bump to main (signed by GitHub), tags it and
+      # publishes the release. Commits and tags pushed with GITHUB_TOKEN
+      # trigger no workflow, so this does not loop back into CI.
+      - env:
+          GITHUB_TOKEN: ${{ github.token }}
+          EXPECTED_VERSION: ${{ needs.version.outputs.version }}
+        run: $SEMANTIC_RELEASE

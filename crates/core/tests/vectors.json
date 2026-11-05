@@ -1,0 +1,271 @@
+{
+  "blobs": [
+    { "text": "", "sha": "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391" },
+    { "text": "hello\n", "sha": "ce013625030ba8dba906f756967f9e9ca394464a" },
+    { "text": "nubes", "sha": "5abb85535d42f40caca6a0850a0bb3de07f4fe37" },
+    { "text": "héllo wörld\n", "sha": "9d4a8bab579c9317dc648e018736aec79914b21a" }
+  ],
+  "ignore": [
+    { "patterns": [], "path": ".nubes/state.json", "ignored": true },
+    { "patterns": [], "path": "photos/.DS_Store", "ignored": true },
+    { "patterns": [], "path": ".nubesignore", "ignored": false },
+    { "patterns": ["*.log"], "path": "a/b/c.log", "ignored": true },
+    { "patterns": ["/build"], "path": "src/build/x", "ignored": false },
+    { "patterns": ["/build"], "path": "build/x", "ignored": true },
+    { "patterns": ["tmp/"], "path": "tmp", "ignored": false },
+    { "patterns": ["tmp/"], "path": "a/tmp/x", "ignored": true },
+    { "patterns": ["*.log", "!keep.log"], "path": "x/keep.log", "ignored": false },
+    { "patterns": ["docs/*.md"], "path": "docs/sub/a.md", "ignored": false }
+  ],
+  "plans": [
+    {
+      "name": "in sync",
+      "input": {
+        "base": { "x": { "sha": "A" } },
+        "local": { "x": { "sha": "A" } },
+        "remote": { "x": { "sha": "A" } }
+      },
+      "actions": [],
+      "nextBase": { "x": { "sha": "A", "size": 0 } }
+    },
+    {
+      "name": "new local file",
+      "input": { "local": { "n.txt": { "sha": "A", "size": 3 } } },
+      "actions": [{ "op": "upload", "path": "n.txt", "sha": "A", "size": 3 }],
+      "nextBase": { "n.txt": { "sha": "A", "size": 3 } }
+    },
+    {
+      "name": "new remote file",
+      "input": { "remote": { "dir/n.txt": { "sha": "A", "size": 3 } } },
+      "actions": [{ "op": "download", "path": "dir/n.txt", "sha": "A", "size": 3 }],
+      "nextBase": { "dir/n.txt": { "sha": "A", "size": 3 } }
+    },
+    {
+      "name": "local edit",
+      "input": {
+        "base": { "x": { "sha": "A" } },
+        "local": { "x": { "sha": "B" } },
+        "remote": { "x": { "sha": "A" } }
+      },
+      "actions": [{ "op": "upload", "path": "x", "sha": "B", "size": 0 }],
+      "nextBase": { "x": { "sha": "B", "size": 0 } }
+    },
+    {
+      "name": "remote edit",
+      "input": {
+        "base": { "x": { "sha": "A" } },
+        "local": { "x": { "sha": "A" } },
+        "remote": { "x": { "sha": "B" } }
+      },
+      "actions": [{ "op": "download", "path": "x", "sha": "B", "size": 0 }],
+      "nextBase": { "x": { "sha": "B", "size": 0 } }
+    },
+    {
+      "name": "local delete",
+      "input": {
+        "base": { "x": { "sha": "A" } },
+        "remote": { "x": { "sha": "A" } }
+      },
+      "actions": [{ "op": "deleteRemote", "path": "x" }],
+      "nextBase": {}
+    },
+    {
+      "name": "remote delete",
+      "input": {
+        "base": { "x": { "sha": "A" } },
+        "local": { "x": { "sha": "A" } }
+      },
+      "actions": [{ "op": "deleteLocal", "path": "x" }],
+      "nextBase": {}
+    },
+    {
+      "name": "both edited: conflict copy",
+      "input": {
+        "base": { "notes/x.txt": { "sha": "A" } },
+        "local": { "notes/x.txt": { "sha": "B", "size": 2 } },
+        "remote": { "notes/x.txt": { "sha": "C", "size": 5 } },
+        "device": "mac",
+        "stamp": "20261105-1012"
+      },
+      "actions": [
+        {
+          "op": "conflict",
+          "path": "notes/x.txt",
+          "renamedTo": "notes/x.conflict-mac-20261105-1012.txt",
+          "localSha": "B",
+          "localSize": 2,
+          "remoteSha": "C",
+          "remoteSize": 5,
+          "upload": true
+        }
+      ],
+      "nextBase": {
+        "notes/x.conflict-mac-20261105-1012.txt": { "sha": "B", "size": 2 },
+        "notes/x.txt": { "sha": "C", "size": 5 }
+      }
+    },
+    {
+      "name": "both added the same content",
+      "input": {
+        "local": { "x": { "sha": "A" } },
+        "remote": { "x": { "sha": "A" } }
+      },
+      "actions": [],
+      "nextBase": { "x": { "sha": "A", "size": 0 } }
+    },
+    {
+      "name": "deleted locally, edited remotely: the edit wins",
+      "input": {
+        "base": { "x": { "sha": "A" } },
+        "remote": { "x": { "sha": "B" } }
+      },
+      "actions": [{ "op": "download", "path": "x", "sha": "B", "size": 0 }],
+      "nextBase": { "x": { "sha": "B", "size": 0 } }
+    },
+    {
+      "name": "edited locally, deleted remotely: the edit wins",
+      "input": {
+        "base": { "x": { "sha": "A" } },
+        "local": { "x": { "sha": "B" } }
+      },
+      "actions": [{ "op": "upload", "path": "x", "sha": "B", "size": 0 }],
+      "nextBase": { "x": { "sha": "B", "size": 0 } }
+    },
+    {
+      "name": "deleted on both sides",
+      "input": { "base": { "x": { "sha": "A" } } },
+      "actions": [],
+      "nextBase": {}
+    },
+    {
+      "name": "ignore rules apply to every side",
+      "input": {
+        "local": { ".DS_Store": { "sha": "A" }, "a.log": { "sha": "B" }, "k.txt": { "sha": "C" } },
+        "remote": { ".nubes/meta.json": { "sha": "D" } },
+        "ignore": ["*.log"]
+      },
+      "actions": [{ "op": "upload", "path": "k.txt", "sha": "C", "size": 0 }],
+      "nextBase": { "k.txt": { "sha": "C", "size": 0 } }
+    },
+    {
+      "name": "too large to upload",
+      "input": { "local": { "big.bin": { "sha": "A", "size": 11 } }, "maxSize": 10 },
+      "actions": [{ "op": "skip", "path": "big.bin", "reason": "tooLarge" }],
+      "nextBase": {}
+    },
+    {
+      "name": "push leaves remote changes alone",
+      "input": {
+        "base": { "x": { "sha": "A" }, "y": { "sha": "A" } },
+        "local": { "x": { "sha": "B" }, "y": { "sha": "A" } },
+        "remote": { "x": { "sha": "A" }, "y": { "sha": "C" } },
+        "direction": "push"
+      },
+      "actions": [
+        { "op": "upload", "path": "x", "sha": "B", "size": 0 },
+        { "op": "skip", "path": "y", "reason": "otherDirection" }
+      ],
+      "nextBase": { "x": { "sha": "B", "size": 0 }, "y": { "sha": "A", "size": 0 } }
+    },
+    {
+      "name": "push: local wins a conflict",
+      "input": {
+        "base": { "x": { "sha": "A" } },
+        "local": { "x": { "sha": "B" } },
+        "remote": { "x": { "sha": "C" } },
+        "direction": "push"
+      },
+      "actions": [{ "op": "upload", "path": "x", "sha": "B", "size": 0 }],
+      "nextBase": { "x": { "sha": "B", "size": 0 } }
+    },
+    {
+      "name": "push does not delete a remote edit",
+      "input": {
+        "base": { "x": { "sha": "A" } },
+        "remote": { "x": { "sha": "B" } },
+        "direction": "push"
+      },
+      "actions": [{ "op": "skip", "path": "x", "reason": "otherDirection" }],
+      "nextBase": { "x": { "sha": "A", "size": 0 } }
+    },
+    {
+      "name": "pull keeps an unpushed edit as a local conflict copy",
+      "input": {
+        "base": { "x.md": { "sha": "A" } },
+        "local": { "x.md": { "sha": "B" } },
+        "remote": { "x.md": { "sha": "C" } },
+        "direction": "pull",
+        "device": "laptop",
+        "stamp": "20261105-1012"
+      },
+      "actions": [
+        {
+          "op": "conflict",
+          "path": "x.md",
+          "renamedTo": "x.conflict-laptop-20261105-1012.md",
+          "localSha": "B",
+          "localSize": 0,
+          "remoteSha": "C",
+          "remoteSize": 0,
+          "upload": false
+        }
+      ],
+      "nextBase": { "x.md": { "sha": "C", "size": 0 } }
+    },
+    {
+      "name": "pull does not upload",
+      "input": { "local": { "n": { "sha": "A" } }, "direction": "pull" },
+      "actions": [{ "op": "skip", "path": "n", "reason": "otherDirection" }],
+      "nextBase": {}
+    },
+    {
+      "name": "a file and a folder with the same path",
+      "input": {
+        "local": { "a": { "sha": "A" } },
+        "remote": { "a/b": { "sha": "B" } }
+      },
+      "actions": [
+        { "op": "skip", "path": "a", "reason": "pathClash" },
+        { "op": "skip", "path": "a/b", "reason": "pathClash" }
+      ],
+      "nextBase": {}
+    },
+    {
+      "name": "conflict names never reuse an existing path",
+      "input": {
+        "base": { "x.txt": { "sha": "A" } },
+        "local": {
+          "x.txt": { "sha": "B" },
+          "x.conflict-mac-20261105-1012.txt": { "sha": "D" }
+        },
+        "remote": { "x.txt": { "sha": "C" } },
+        "device": "mac",
+        "stamp": "20261105-1012"
+      },
+      "actions": [
+        { "op": "upload", "path": "x.conflict-mac-20261105-1012.txt", "sha": "D", "size": 0 },
+        {
+          "op": "conflict",
+          "path": "x.txt",
+          "renamedTo": "x.conflict-mac-20261105-1012-2.txt",
+          "localSha": "B",
+          "localSize": 0,
+          "remoteSha": "C",
+          "remoteSize": 0,
+          "upload": true
+        }
+      ],
+      "nextBase": {
+        "x.conflict-mac-20261105-1012-2.txt": { "sha": "B", "size": 0 },
+        "x.conflict-mac-20261105-1012.txt": { "sha": "D", "size": 0 },
+        "x.txt": { "sha": "C", "size": 0 }
+      }
+    },
+    {
+      "name": "unsafe remote paths are never written",
+      "input": { "remote": { "../evil": { "sha": "A" } } },
+      "actions": [{ "op": "skip", "path": "../evil", "reason": "unsafePath" }],
+      "nextBase": {}
+    }
+  ]
+}

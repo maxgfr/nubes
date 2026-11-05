@@ -1,0 +1,17 @@
+[package]
+name = "nubes-wasm"
+version = "0.0.0"
+description = "nubes-core for the browser (wasm-bindgen)."
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+nubes-core = { path = "../core" }
+serde_json = "1"
+# Pinned: must match the wasm-bindgen CLI that generates the JS glue.
+wasm-bindgen = "=0.2.128"

@@ -1,0 +1,27 @@
+[package]
+name = "nubes-cli"
+version = "0.0.0"
+description = "nubes CLI: sync a folder with a GitHub repository you own."
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[[bin]]
+name = "nubes"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+base64 = "0.22"
+clap = { version = "4", features = ["derive", "env"] }
+nubes-core = { path = "../crates/core" }
+rpassword = "7"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+ureq = { version = "3", features = ["json"] }
+walkdir = "2"
+
+[dev-dependencies]
+tempfile = "3"

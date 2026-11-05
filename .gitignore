@@ -1,0 +1,9 @@
+node_modules/
+dist/
+target/
+src/engine/pkg/
+test-results/
+playwright-report/
+.impeccable/
+.DS_Store
+*.log
