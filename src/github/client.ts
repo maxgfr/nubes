@@ -53,6 +53,22 @@ export interface RepoInfo {
   defaultBranch: string;
   private: boolean;
   canPush: boolean;
+  /** As GitHub reports it (recomputed with a delay after pushes), in bytes. */
+  size: number;
+}
+
+/** A file changed by a commit; paths are repository paths. */
+export interface FileChange {
+  path: string;
+  status: "added" | "modified" | "removed" | "renamed" | "copied" | "changed" | "unchanged";
+  /** For a rename: where it came from. */
+  previous?: string;
+}
+
+export interface CommitFiles {
+  /** First parent, null for the first commit. */
+  parent: string | null;
+  files: FileChange[];
 }
 
 export type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
@@ -311,9 +327,35 @@ export class GitHub {
     }
   }
 
-  /** Commits that touched `path` (a file or folder), newest first. */
-  async history(full: string, branch: string, path: string, page = 1): Promise<CommitInfo[]> {
-    const q = new URLSearchParams({ sha: branch, per_page: "30", page: String(page) });
+  /** What a commit changed (GitHub lists up to 300 files). */
+  async commitFiles(full: string, sha: string): Promise<CommitFiles> {
+    const c = await this.#json<{
+      parents: { sha: string }[];
+      files?: { filename: string; status: FileChange["status"]; previous_filename?: string }[];
+    }>("GET", `/repos/${full}/commits/${sha}`);
+    return {
+      parent: c.parents[0]?.sha ?? null,
+      files: (c.files ?? []).map((f) => ({
+        path: f.filename,
+        status: f.status,
+        ...(f.previous_filename ? { previous: f.previous_filename } : {}),
+      })),
+    };
+  }
+
+  /** Commits that touched `path` (a file or folder, "" for all), newest first. */
+  async history(
+    full: string,
+    branch: string,
+    path: string,
+    page = 1,
+    perPage = 30,
+  ): Promise<CommitInfo[]> {
+    const q = new URLSearchParams({
+      sha: branch,
+      per_page: String(perPage),
+      page: String(page),
+    });
     if (path) q.set("path", path);
     const list = await this.#json<
       {
@@ -338,6 +380,7 @@ function repoInfo(j: Json): RepoInfo {
     defaultBranch: String(j.default_branch ?? "main"),
     private: Boolean(j.private),
     canPush: perms.push ?? true,
+    size: Number(j.size ?? 0) * 1024,
   };
 }
 

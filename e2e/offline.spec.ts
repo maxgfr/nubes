@@ -38,7 +38,7 @@ test("files added offline wait on the device and are sent when the network is ba
   await signIn(page);
   await goOffline(page);
   await page
-    .locator("input[type=file]:not([webkitdirectory])")
+    .locator("input[type=file]:not([webkitdirectory]):not([capture])")
     .setInputFiles([
       { name: "offline.txt", mimeType: "text/plain", buffer: Buffer.from("written on a plane") },
     ]);

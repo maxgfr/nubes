@@ -151,6 +151,13 @@ export function createFakeGitHub(opts: { login?: string; tokens?: string[] } = {
     return c;
   };
 
+  /** In KB, like GitHub: the bytes of every blob stored. */
+  const repoSize = (r: Repo) => {
+    let n = 0;
+    for (const o of r.objects.values()) if (o.type === "blob") n += o.data.length;
+    return Math.ceil(n / 1024);
+  };
+
   const repoOf = (owner: string, name: string) => repos.get(`${owner}/${name}`.toLowerCase());
 
   const branchFiles = (r: Repo, branch: string) => {
@@ -180,6 +187,7 @@ export function createFakeGitHub(opts: { login?: string; tokens?: string[] } = {
             default_branch: r.defaultBranch,
             private: r.private,
             permissions: { push: true },
+            size: repoSize(r),
           })),
         ),
     ],
@@ -193,6 +201,7 @@ export function createFakeGitHub(opts: { login?: string; tokens?: string[] } = {
               default_branch: r.defaultBranch,
               private: r.private,
               permissions: { push: true },
+              size: repoSize(r),
             })
           : err(404, "Not Found"),
     ],
@@ -421,6 +430,33 @@ export function createFakeGitHub(opts: { login?: string; tokens?: string[] } = {
         if (!c) return err(404, "No commit found for the ref");
         const e = flatten(r, c.tree).get(decodeURIComponent(m[1] as string));
         return e ? json({ type: "file", sha: e.sha, path: m[1] }) : err(404, "Not Found");
+      },
+    ],
+    [
+      "GET",
+      /^\/repos\/[^/]+\/[^/]+\/commits\/([0-9a-f]{40})$/,
+      (r, m) => {
+        const c = r && get(r, m[1] as string, "commit");
+        if (!r || !c) return err(404, "No commit found for SHA");
+        const parent = c.parents[0];
+        const pc = parent ? get(r, parent, "commit") : undefined;
+        const now = flatten(r, c.tree);
+        const before = pc ? flatten(r, pc.tree) : new Map<string, { mode: string; sha: string }>();
+        const files: { filename: string; status: string; sha: string }[] = [];
+        for (const [p, e] of now) {
+          const b = before.get(p);
+          if (!b) files.push({ filename: p, status: "added", sha: e.sha });
+          else if (b.sha !== e.sha) files.push({ filename: p, status: "modified", sha: e.sha });
+        }
+        for (const [p, e] of before)
+          if (!now.has(p)) files.push({ filename: p, status: "removed", sha: e.sha });
+        return json({
+          sha: m[1],
+          commit: { message: c.message, author: { name: login, date: c.date } },
+          author: { login },
+          parents: c.parents.map((sha) => ({ sha })),
+          files,
+        });
       },
     ],
     [

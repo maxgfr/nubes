@@ -122,3 +122,39 @@ export const IconChevron = (p: P) => (
     <path d="m9 6 6 6-6 6" />
   </Icon>
 );
+export const IconCamera = (p: P) => (
+  <Icon {...p}>
+    <path d="M4 8.5A1.5 1.5 0 0 1 5.5 7h2l1.5-2h6l1.5 2h2A1.5 1.5 0 0 1 20 8.5v9a1.5 1.5 0 0 1-1.5 1.5h-13A1.5 1.5 0 0 1 4 17.5Z" />
+    <circle cx="12" cy="12.5" r="3.5" />
+  </Icon>
+);
+export const IconGrid = (p: P) => (
+  <Icon {...p}>
+    <rect x="4" y="4" width="6.5" height="6.5" rx="1" />
+    <rect x="13.5" y="4" width="6.5" height="6.5" rx="1" />
+    <rect x="4" y="13.5" width="6.5" height="6.5" rx="1" />
+    <rect x="13.5" y="13.5" width="6.5" height="6.5" rx="1" />
+  </Icon>
+);
+export const IconList = (p: P) => (
+  <Icon {...p}>
+    <path d="M8 6h12M8 12h12M8 18h12M4 6h.01M4 12h.01M4 18h.01" />
+  </Icon>
+);
+export const IconSelect = (p: P) => (
+  <Icon {...p}>
+    <rect x="4" y="4" width="16" height="16" rx="3" />
+    <path d="m8.5 12 2.5 2.5 4.5-5" />
+  </Icon>
+);
+export const IconActivity = (p: P) => (
+  <Icon {...p}>
+    <path d="M3 12h4l3-7 4 14 3-7h4" />
+  </Icon>
+);
+export const IconNote = (p: P) => (
+  <Icon {...p}>
+    <path d="M6 3.5h8l4 4v13H6Z" />
+    <path d="M14 3.5v4h4M9 12h6M9 15.5h6" />
+  </Icon>
+);

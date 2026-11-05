@@ -43,8 +43,8 @@ API directly with a fine-grained token you create.
 
 | Device | How |
 |---|---|
-| **iPad, iPhone, Android, any browser** | Open the web app. Upload files or whole folders (button, or drag from the Files app), preview, download a folder as a zip, restore old versions. What other devices push shows up within 30 s, or as soon as you come back to the tab. Install it to the home screen as an app. |
-| **Mac, Linux** | The CLI: `nubes sync` on demand, `nubes watch` to keep a folder in sync. |
+| **iPad, iPhone, Android, any browser** | Open the web app. Upload files or whole folders (button, drag from the Files app, paste an image, or take a photo), preview, edit text and Markdown notes, browse photos in a grid, search and sort every file, select several to move, zip or delete at once, restore old versions or recently deleted files, see the activity of each device. Files added offline are sent when the network is back; a folder marked "Keep offline" opens without a network. What other devices push shows up within 30 s, or as soon as you come back to the tab. Install it to the home screen as an app. |
+| **Mac, Linux** | The CLI: `nubes sync` on demand, `nubes watch` to keep a folder in sync, `nubes service install` to do it in the background from every login. |
 | **Chrome, Edge (desktop)** | The web app can also keep a local folder in two-way sync while the tab is open ("Sync a folder of this computer"), with the same engine as the CLI. |
 
 Safari (iPadOS, macOS) does not let a web page keep write access to a folder,

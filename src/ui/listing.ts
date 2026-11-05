@@ -63,3 +63,49 @@ export function totals(files: ReadonlyMap<string, RemoteFile>): { count: number;
   for (const f of files.values()) size += f.size;
   return { count: files.size, size };
 }
+
+/** Files whose path contains every word of the query (case-insensitive), as rows. */
+export function searchFiles(files: ReadonlyMap<string, RemoteFile>, query: string): Row[] {
+  const words = query.toLowerCase().split(/\s+/).filter(Boolean);
+  if (words.length === 0) return [];
+  const rows: Row[] = [];
+  for (const [path, f] of files) {
+    const p = path.toLowerCase();
+    if (!words.every((w) => p.includes(w))) continue;
+    const name = path.slice(path.lastIndexOf("/") + 1);
+    rows.push({ kind: "file", name, path, size: f.size, count: 0, sha: f.sha });
+  }
+  return rows.sort((a, b) => collator.compare(a.name, b.name) || collator.compare(a.path, b.path));
+}
+
+export type SortBy = "name" | "size" | "date";
+
+/**
+ * Folders first, then files; by name (A→Z), size (largest first) or date
+ * (latest first; a folder's date is its latest file's, unknown dates last).
+ */
+export function sortRows(
+  rows: Row[],
+  by: SortBy,
+  dates: ReadonlyMap<string, string> = new Map(),
+): Row[] {
+  const dateOf = (r: Row): string => {
+    if (r.kind === "file") return dates.get(r.path) ?? "";
+    let latest = "";
+    const prefix = `${r.path}/`;
+    for (const [p, d] of dates) if (p.startsWith(prefix) && d > latest) latest = d;
+    return latest;
+  };
+  const key = new Map(rows.map((r) => [r, by === "date" ? dateOf(r) : ""]));
+  const cmp = (a: Row, b: Row) => {
+    if (a.kind !== b.kind) return a.kind === "folder" ? -1 : 1;
+    if (by === "size" && a.size !== b.size) return b.size - a.size;
+    if (by === "date") {
+      const da = key.get(a) as string;
+      const db = key.get(b) as string;
+      if (da !== db) return da < db ? 1 : -1;
+    }
+    return collator.compare(a.name, b.name);
+  };
+  return [...rows].sort(cmp);
+}
