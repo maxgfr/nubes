@@ -28,7 +28,8 @@ The token can also come from `NUBES_TOKEN` or from `gh auth token`.
 | `nubes status` | Shows what a sync would do, changes nothing |
 | `nubes sync` | Two-way sync: one commit for the uploads, then downloads |
 | `nubes push` / `nubes pull` | One direction only |
-| `nubes watch` | Keeps syncing every 30 s (`--interval 10`) |
+| `nubes watch` | Keeps syncing: 2 s after a local change, and when the repository changes (`--interval 15`) |
+| `nubes service install` | Runs `nubes watch` for the folder in the background from every login (`status`, `uninstall`) |
 | `nubes ls [folder]` | Lists the files in the repository |
 | `nubes log [path]` | Commits that changed a path |
 | `nubes restore <path> --at <commit>` | Puts an older version back in the folder (then `nubes sync`) |

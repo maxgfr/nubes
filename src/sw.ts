@@ -3,7 +3,8 @@
  * version are injected at build time) and serves it cache-first. A new
  * version installs in the background and waits: the page shows "A new
  * version is ready" and only then asks it to take over, so an upload is
- * never interrupted by an update. GitHub API calls are never cached here.
+ * never interrupted by an update. GitHub API calls are never cached here;
+ * the files of folders kept offline are, by the page (src/store/offline.ts).
  */
 
 // A module: these interfaces stay local rather than merge with the DOM's.
@@ -41,8 +42,10 @@ sw.addEventListener("install", (e) => {
 sw.addEventListener("activate", (e) => {
   e.waitUntil(
     (async () => {
+      // Old versions of the app go; the folders kept offline (nubes-pins:*) stay.
       for (const key of await caches.keys())
-        if (key.startsWith("nubes-") && key !== CACHE) await caches.delete(key);
+        if (key.startsWith("nubes-") && key !== CACHE && !key.startsWith("nubes-pins"))
+          await caches.delete(key);
       await sw.clients.claim();
     })(),
   );

@@ -21,6 +21,10 @@
   otherwise in `sessionStorage`. Signing out removes it. Anyone with access to
   your browser profile can read it: revoke it on GitHub if a device is lost.
 - The page refuses to run inside a frame.
+- Offline copies stay in the browser's storage for this site: the last
+  listing and files added offline in IndexedDB, the files of folders marked
+  "Keep offline" in Cache Storage. Signing out erases the listing and the
+  offline files; files added offline and not sent yet stay until they are.
 
 ## CLI
 

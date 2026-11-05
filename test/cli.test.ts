@@ -10,6 +10,7 @@ import {
   mkdtempSync,
   readdirSync,
   readFileSync,
+  realpathSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
@@ -39,6 +40,18 @@ function folder(): string {
   return d;
 }
 
+function env(cwd: string, device = "laptop", token = "test-token") {
+  return {
+    PATH: process.env.PATH ?? "",
+    HOME: cwd,
+    NUBES_API_URL: api,
+    NUBES_TOKEN: token,
+    NUBES_DEVICE: device,
+    NUBES_NO_GH: "1",
+    NUBES_CREDENTIALS_FILE: join(cwd, ".creds"),
+  };
+}
+
 async function nubes(
   cwd: string,
   args: string[],
@@ -49,15 +62,7 @@ async function nubes(
     stdout: "pipe",
     stderr: "pipe",
     cwd,
-    env: {
-      PATH: process.env.PATH ?? "",
-      HOME: cwd,
-      NUBES_API_URL: api,
-      NUBES_TOKEN: token,
-      NUBES_DEVICE: device,
-      NUBES_NO_GH: "1",
-      NUBES_CREDENTIALS_FILE: join(cwd, ".creds"),
-    },
+    env: env(cwd, device, token),
   });
   const [stdout, stderr, code] = await Promise.all([
     new Response(p.stdout).text(),
@@ -190,6 +195,56 @@ describe.skipIf(!has)("nubes CLI", () => {
     await nubes(a, ["restore", "x.txt", "--at", first]);
     expect(read(a, "x.txt")).toBe("1");
     expect(await nubes(a, ["ls"])).toContain("2 file(s)");
+  });
+
+  test("watch reacts to file events within seconds, and polls the branch with its ETag", async () => {
+    const a = folder();
+    write(a, "first.txt", "1");
+    await nubes(a, ["init", repo]);
+    const p = Bun.spawn([BIN, "watch", "--interval", "2"], {
+      stdout: "ignore",
+      stderr: "ignore",
+      cwd: a,
+      env: env(a),
+    });
+    const until = async (cond: () => boolean, ms = 15_000) => {
+      const end = Date.now() + ms;
+      while (!cond()) {
+        if (Date.now() > end) throw new Error("timed out");
+        await Bun.sleep(100);
+      }
+    };
+    try {
+      await until(() => fake.files(repo)["first.txt"] === "1");
+      // A local edit is pushed after the 2 s debounce, not at the next poll.
+      const before = fake.stats.notModified;
+      write(a, "notes/new.md", "# new");
+      await until(() => fake.files(repo)["notes/new.md"] === "# new", 10_000);
+      // A remote change comes down at the next poll.
+      fake.push(repo, { "from-ipad.txt": "hi" });
+      await until(() => existsSync(join(a, "from-ipad.txt")), 10_000);
+      expect(read(a, "from-ipad.txt")).toBe("hi");
+      // Unchanged polls were answered 304.
+      await until(() => fake.stats.notModified > before, 10_000);
+    } finally {
+      p.kill();
+      await p.exited;
+    }
+  });
+
+  test("service install --print writes a launchd agent or a systemd unit running watch", async () => {
+    const a = folder();
+    await nubes(a, ["init", repo]);
+    const out = await nubes(a, ["service", "install", "--print"]);
+    if (process.platform === "darwin") {
+      expect(out).toContain("<key>Label</key>");
+      expect(out).toContain(`<string>${realpathSync(a)}</string>`);
+      expect(out).toContain("<string>watch</string>");
+    } else {
+      expect(out).toContain(`-C "${realpathSync(a)}" watch`);
+      expect(out).toContain("WantedBy=default.target");
+    }
+    expect(await nubes(a, ["service", "status"])).toContain("no service");
   });
 
   test("a prefix syncs only a sub-folder of the repository", async () => {

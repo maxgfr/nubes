@@ -8,6 +8,20 @@ import { batch, computed, signal } from "@preact/signals";
 import { blobShaOf, Ignore, isSafePath, loadEngine, MAX_BLOB } from "./engine";
 import { GitHub, GitHubError, type TreeChange } from "./github/client";
 import { Remote, type RemoteState } from "./github/repo";
+import {
+  addPending,
+  clearPinCache,
+  dropPending,
+  forgetOffline,
+  isPinned,
+  loadPins,
+  loadSnapshot,
+  pendingFiles,
+  pinnedBlob,
+  savePins,
+  saveSnapshot,
+  syncPinCache,
+} from "./store/offline";
 import { deviceName, type Link, loadLink, loadToken, saveLink, saveToken } from "./store/settings";
 import { basename, joinPath } from "./ui/format";
 import { filesUnder } from "./ui/listing";
@@ -28,6 +42,7 @@ export type UploadStatus =
   | "done"
   | "unchanged"
   | "skipped"
+  | "pending"
   | "error";
 
 export interface UploadItem {
@@ -56,6 +71,12 @@ export const draftDirs = signal<Set<string>>(new Set());
 export const uploads = signal<UploadItem[]>([]);
 export const toasts = signal<Toast[]>([]);
 export const busy = signal<string | null>(null);
+/** Files added offline, waiting for the network. */
+export const pendingCount = signal(0);
+/** Folders of the current link kept offline ("" for everything). */
+export const pins = signal<string[]>(link.value ? loadPins(link.value) : []);
+/** Progress of saving pinned folders for offline use. */
+export const pinStatus = signal<string | null>(null);
 
 export const remote = computed(() => {
   const s = session.value;
@@ -106,14 +127,25 @@ export async function signIn(token: string, remember: boolean): Promise<void> {
 export async function resume(): Promise<void> {
   const saved = loadToken();
   if (!saved) return;
+  const l = link.value;
+  if (l) void pendingFiles(l).then((p) => (pendingCount.value = p.length));
+  if (l && globalThis.navigator?.onLine === false) {
+    // Offline: open the folder as last seen; the login is read once back online.
+    session.value = { gh: new GitHub(saved.token), login: "" };
+    online.value = false;
+    void loadEngine();
+    void refresh(true);
+    return;
+  }
   try {
     await signIn(saved.token, saved.remember);
     if (link.value) await refresh(true);
   } catch (err) {
     if (err instanceof GitHubError && err.status === 401) saveToken(null);
     else if (link.value) {
-      // Offline: keep the token, show the error.
+      // Offline: keep the token, show the last tree seen.
       session.value = { gh: new GitHub(saved.token), login: "" };
+      void refresh(true);
     }
     fail(err);
   }
@@ -121,6 +153,8 @@ export async function resume(): Promise<void> {
 
 export async function signOut(): Promise<void> {
   saveToken(null);
+  const l = link.value;
+  if (l) await forgetOffline(l);
   batch(() => {
     session.value = null;
     remoteState.value = null;
@@ -135,8 +169,13 @@ export async function chooseRepo(next: Link | null): Promise<void> {
     remoteState.value = null;
     cwd.value = "";
     draftDirs.value = new Set();
+    pins.value = next ? loadPins(next) : [];
+    pendingCount.value = 0;
   });
-  if (next) await refresh(true);
+  if (next) {
+    pendingCount.value = (await pendingFiles(next)).length;
+    await refresh(true);
+  }
 }
 
 // --- Reading -------------------------------------------------------------
@@ -153,6 +192,12 @@ export function refresh(force = false): Promise<void> {
     if (!r) return;
     loading.value = true;
     try {
+      // The last tree seen, at once (offline, or while the network answers).
+      const l = link.value;
+      if (!remoteState.value && l) {
+        const saved = await loadSnapshot(l);
+        if (saved && !remoteState.value && link.value === l) remoteState.value = saved;
+      }
       const current = remoteState.value;
       if (!force && current) {
         const head = await r.gh.head(r.target.full, r.target.branch);
@@ -168,6 +213,9 @@ export function refresh(force = false): Promise<void> {
         lastChecked.value = Date.now();
         online.value = true;
       });
+      if (l && link.value === l) void saveSnapshot(l, s);
+      void updatePins();
+      if (pendingCount.value > 0) void flushPending();
     } catch (err) {
       if (err instanceof TypeError) online.value = false;
       else fail(err);
@@ -189,6 +237,14 @@ export function startPolling(): () => void {
   const onOnline = () => {
     online.value = true;
     tick();
+    void flushPending();
+    const s = session.value;
+    // Opened offline: the login is still unknown.
+    if (s && !s.login)
+      void s.gh.user().then(
+        (login) => (session.value = { ...s, login }),
+        () => {},
+      );
   };
   const onOffline = () => {
     online.value = false;
@@ -215,8 +271,11 @@ export async function fetchBlob(sha: string, type = "application/octet-stream"):
   if (hit) return hit.type === type ? hit : new Blob([hit], { type });
   const r = remote.value;
   if (!r) throw new Error("not connected");
-  const bytes = await r.gh.blob(r.target.full, sha);
-  const blob = new Blob([bytes as BlobPart], { type });
+  const l = link.value;
+  const kept = l ? await pinnedBlob(l, sha) : null;
+  const blob = kept
+    ? new Blob([kept], { type })
+    : new Blob([(await r.gh.blob(r.target.full, sha)) as BlobPart], { type });
   while (blobCacheBytes + blob.size > 150 * 1024 * 1024 && blobCache.size) {
     const [k, v] = blobCache.entries().next().value as [string, Blob];
     blobCache.delete(k);
@@ -290,7 +349,7 @@ function setUpload(id: number, patch: Partial<UploadItem>): void {
 
 export function clearFinishedUploads(): void {
   uploads.value = uploads.value.filter(
-    (u) => !["done", "unchanged", "skipped", "error"].includes(u.status),
+    (u) => !["done", "unchanged", "skipped", "error", "pending"].includes(u.status),
   );
 }
 
@@ -300,12 +359,31 @@ export interface PickedFile {
   file: File;
 }
 
+type Picked = UploadItem & { file: Blob };
+
+/** Keeps files for later (IndexedDB) and shows them as waiting. */
+async function queueOffline(items: Picked[]): Promise<void> {
+  const l = link.value;
+  if (!l || items.length === 0) return;
+  pendingCount.value = await addPending(
+    l,
+    items.map((i) => ({ path: i.path, file: i.file })),
+  );
+  for (const it of items) setUpload(it.id, { status: "pending", note: "sent when back online" });
+}
+
 /**
  * Uploads files into `dir` as a single commit. Unchanged files and blobs
- * the repository already has are not sent again.
+ * the repository already has are not sent again. Without a network, the
+ * files are kept on this device and sent when it comes back.
  */
 export function upload(picked: PickedFile[], dir = cwd.value): Promise<void> {
-  const items: (UploadItem & { file: File })[] = picked.map((p) => ({
+  return uploadNow(picked, dir).then(() => undefined);
+}
+
+/** Like `upload`; true when the files were handled (sent, unchanged or refused), false when they wait for the network. */
+function uploadNow(picked: { path: string; file: Blob }[], dir: string): Promise<boolean> {
+  const items: Picked[] = picked.map((p) => ({
     id: ++uploadId,
     path: joinPath(dir, p.path.normalize("NFC")),
     size: p.file.size,
@@ -313,7 +391,25 @@ export function upload(picked: PickedFile[], dir = cwd.value): Promise<void> {
     file: p.file,
   }));
   uploads.value = [...uploads.value, ...items.map(({ file: _f, ...u }) => u)];
-  return serial(`Uploading ${items.length} file${items.length === 1 ? "" : "s"}`, async () => {
+  const final = new Set<number>();
+  const label = `Uploading ${items.length} file${items.length === 1 ? "" : "s"}`;
+  return serial(label, async () => {
+    if (!online.value) {
+      await queueOffline(items);
+      return false;
+    }
+    try {
+      await send();
+      return true;
+    } catch (err) {
+      if (!(err instanceof TypeError)) throw err;
+      online.value = false;
+      await queueOffline(items.filter((i) => !final.has(i.id)));
+      return false;
+    }
+  }).then((ok) => ok ?? true);
+
+  async function send(): Promise<void> {
     await loadEngine();
     const r = remote.value;
     if (!r) throw new Error("not connected");
@@ -325,27 +421,31 @@ export function upload(picked: PickedFile[], dir = cwd.value): Promise<void> {
     const ignore = new Ignore(await ignoreText(s));
     const ready: (TreeChange & { id: number })[] = [];
     let next = 0;
+    const settle = (id: number, patch: Partial<UploadItem>) => {
+      final.add(id);
+      setUpload(id, patch);
+    };
     const worker = async () => {
       while (next < items.length) {
-        const it = items[next++] as UploadItem & { file: File };
+        const it = items[next++] as Picked;
         try {
           if (!isSafePath(it.path)) {
-            setUpload(it.id, { status: "error", note: "invalid name" });
+            settle(it.id, { status: "error", note: "invalid name" });
             continue;
           }
           if (ignore.isIgnored(it.path)) {
-            setUpload(it.id, { status: "skipped", note: "ignored" });
+            settle(it.id, { status: "skipped", note: "ignored" });
             continue;
           }
           if (it.size > MAX_BLOB) {
-            setUpload(it.id, { status: "error", note: "over GitHub's 100 MB limit" });
+            settle(it.id, { status: "error", note: "over GitHub's 100 MB limit" });
             continue;
           }
           setUpload(it.id, { status: "hashing" });
           const sha = await blobShaOf(it.file);
           const existing = s.files.get(it.path);
           if (existing?.sha === sha) {
-            setUpload(it.id, { status: "unchanged" });
+            settle(it.id, { status: "unchanged" });
             continue;
           }
           if (!s.blobs.has(sha)) {
@@ -359,7 +459,9 @@ export function upload(picked: PickedFile[], dir = cwd.value): Promise<void> {
           ready.push({ id: it.id, path: it.path, sha, mode: existing?.mode ?? "100644" });
           setUpload(it.id, { status: "ready" });
         } catch (err) {
-          setUpload(it.id, { status: "error", note: describeError(err) });
+          // The network went away: the whole batch waits for it.
+          if (err instanceof TypeError) throw err;
+          settle(it.id, { status: "error", note: describeError(err) });
         }
       }
     };
@@ -379,15 +481,91 @@ export function upload(picked: PickedFile[], dir = cwd.value): Promise<void> {
             .map(({ path, sha, mode }) => ({ path, sha, ...(mode ? { mode } : {}) })),
         message({ added, updated: ready.length - added }),
       );
-      for (const c of ready) setUpload(c.id, { status: "done" });
+      for (const c of ready) settle(c.id, { status: "done" });
       const dirs = new Set(draftDirs.value);
       for (const c of ready) for (const d of dirs) if (c.path.startsWith(`${d}/`)) dirs.delete(d);
       draftDirs.value = dirs;
     } catch (err) {
-      for (const c of ready) setUpload(c.id, { status: "error", note: describeError(err) });
+      if (!(err instanceof TypeError))
+        for (const c of ready) settle(c.id, { status: "error", note: describeError(err) });
       throw err;
     }
-  }).then(() => undefined);
+  }
+}
+
+let flushing = false;
+
+/** Sends the files added offline, once the network is back. */
+export async function flushPending(): Promise<void> {
+  const l = link.value;
+  if (flushing || !l || !online.value || !remote.value) return;
+  flushing = true;
+  try {
+    const list = await pendingFiles(l);
+    pendingCount.value = list.length;
+    if (list.length === 0) return;
+    // The new rows of this upload replace the waiting ones.
+    uploads.value = uploads.value.filter((u) => u.status !== "pending");
+    if (await uploadNow(list, "")) {
+      pendingCount.value = await dropPending(l, new Set(list.map((p) => p.id)));
+    }
+  } finally {
+    flushing = false;
+  }
+}
+
+/** Keeps a folder ("" for everything) on this device, or stops keeping it. */
+export function setPinned(dir: string, on: boolean): void {
+  const l = link.value;
+  if (!l) return;
+  const next = on ? [...new Set([...pins.value, dir])] : pins.value.filter((d) => d !== dir);
+  pins.value = next;
+  savePins(l, next);
+  // Asks the browser not to evict the offline copies (Safari would after weeks unused).
+  if (on) void globalThis.navigator?.storage?.persist?.().catch(() => false);
+  void updatePins();
+  const name = dir ? basename(dir) : "Everything";
+  toast(on ? `${name} is kept on this device` : `${name} is no longer kept offline`);
+}
+
+let pinning = false;
+let pinAgain = false;
+
+/** Brings the offline copies in line with the pinned folders and the current tree. */
+export async function updatePins(): Promise<void> {
+  const l = link.value;
+  if (!l) return;
+  if (pinning) {
+    pinAgain = true;
+    return;
+  }
+  pinning = true;
+  try {
+    do {
+      pinAgain = false;
+      const s = remoteState.value;
+      if (!s) break;
+      const wanted = new Set<string>();
+      for (const [p, f] of s.files) if (isPinned(pins.value, p)) wanted.add(f.sha);
+      if (wanted.size === 0 && pins.value.length === 0) {
+        await clearPinCache(l);
+        continue;
+      }
+      await syncPinCache(
+        l,
+        wanted,
+        (sha) => fetchBlob(sha),
+        (done, total) => {
+          pinStatus.value = `Saving for offline use (${done}/${total})`;
+        },
+      );
+    } while (pinAgain);
+  } catch (err) {
+    if (!(err instanceof TypeError)) fail(err);
+  } finally {
+    pinning = false;
+    pinStatus.value = null;
+  }
 }
 
 /** Deletes files and folders (everything under them) in one commit. */

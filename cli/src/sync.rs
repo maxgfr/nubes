@@ -10,7 +10,7 @@ use anyhow::{bail, Context, Result};
 use nubes_core::{plan, Action, Direction, Entry, Matcher, Plan, PlanInput, SkipReason, Snapshot};
 
 use crate::config::{FileState, Folder, State};
-use crate::github::{Change, RefMoved, Remote, RemoteState};
+use crate::github::{Change, Poll, RefMoved, Remote, RemoteState};
 use crate::scan::{hash_file, mtime_ns, scan, LocalFile};
 use crate::util;
 
@@ -401,55 +401,140 @@ pub fn run(folder: &Folder, remote: &Remote<'_>, opts: &Options) -> Result<Outco
     bail!("the repository kept changing during the sync; try again")
 }
 
-/// Polls both sides and syncs whenever either changed.
+/// Quiet time after a file event before syncing (an editor saving, a copy in progress).
+const DEBOUNCE: Duration = Duration::from_secs(2);
+/// A burst of events never delays a sync longer than this.
+const DEBOUNCE_MAX: Duration = Duration::from_secs(20);
+/// Full rescan even without events, in case the platform dropped some.
+const RESCAN: Duration = Duration::from_secs(300);
+
+/// Whether the folder differs from the last synced base (a cheap scan: the
+/// hash cache skips unchanged files).
+fn local_changed(folder: &Folder, matcher: &Matcher) -> Result<bool> {
+    let state = folder.load_state()?;
+    let local = scan(&folder.root, &state.files, matcher)?;
+    let local_snap = local_snapshot(&local.files);
+    let base = base_snapshot(&state);
+    Ok(local_snap.len() != base.len()
+        || !local_snap
+            .iter()
+            .all(|(p, e)| base.get(p).is_some_and(|b| b.sha == e.sha)))
+}
+
+fn sync_once(folder: &Folder, remote: &Remote<'_>) {
+    let opts = Options {
+        direction: Direction::Both,
+        dry_run: false,
+        quiet: true,
+    };
+    match run(folder, remote, &opts) {
+        Ok(out) => {
+            for a in &out.plan.actions {
+                println!("{}", describe(a));
+            }
+            if let Some(c) = out.commit {
+                println!("committed {}", &c[..7.min(c.len())]);
+            }
+        }
+        Err(e) => eprintln!("sync failed: {e:#}"),
+    }
+}
+
+/// Watches the folder for file events (synced after 2 s of quiet) and polls
+/// the branch every `interval` with its ETag (an unchanged branch costs no
+/// rate limit). Without file events (unsupported file system), scans the
+/// folder every `interval` instead.
 pub fn watch(folder: &Folder, remote: &Remote<'_>, interval: Duration) -> Result<()> {
+    use notify::{RecursiveMode, Watcher};
+    use std::sync::mpsc::{channel, RecvTimeoutError};
+
     let ignore = folder.ignore_lines()?;
     let matcher = Matcher::new(&ignore).map_err(anyhow::Error::msg)?;
+    let (tx, rx) = channel::<()>();
+    let own = folder.root.join(crate::config::DIR);
+    let watcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
+        // nubes' own state (.nubes/) changes on every sync: not a reason to sync.
+        if res.is_ok_and(|ev| ev.paths.iter().any(|p| !p.starts_with(&own))) {
+            let _ = tx.send(());
+        }
+    });
+    let watcher = watcher.and_then(|mut w| {
+        w.watch(&folder.root, RecursiveMode::Recursive)?;
+        Ok(w)
+    });
+    let live = match &watcher {
+        Ok(_) => true,
+        Err(e) => {
+            eprintln!(
+                "file events unavailable ({e}), scanning every {}s",
+                interval.as_secs()
+            );
+            false
+        }
+    };
     eprintln!(
-        "watching {} ⇄ {} every {}s (Ctrl-C to stop)",
+        "watching {} ⇄ {} (remote checked every {}s; Ctrl-C to stop)",
         folder.root.display(),
         remote.full,
         interval.as_secs()
     );
-    let mut first = true;
+    let rescan = if live { RESCAN } else { interval };
+    let mut etag: Option<String> = None;
+    let mut next_poll = Instant::now() + interval;
+    let mut next_scan = Instant::now() + rescan;
+    let mut pending = true; // the first round always syncs
     loop {
-        let started = Instant::now();
-        let changed = first || {
-            let state = folder.load_state()?;
-            let head = remote.gh.head(&remote.full, &remote.branch)?;
-            let local = scan(&folder.root, &state.files, &matcher)?;
-            let local_snap = local_snapshot(&local.files);
-            let base = base_snapshot(&state);
-            let same_local = local_snap.len() == base.len()
-                && local_snap
-                    .iter()
-                    .all(|(p, e)| base.get(p).is_some_and(|b| b.sha == e.sha));
-            head != state.head || !same_local
-        };
-        first = false;
-        if changed {
-            match run(
-                folder,
-                remote,
-                &Options {
-                    direction: Direction::Both,
-                    dry_run: false,
-                    quiet: true,
-                },
-            ) {
-                Ok(out) => {
-                    for a in &out.plan.actions {
-                        println!("{}", describe(a));
-                    }
-                    if let Some(c) = out.commit {
-                        println!("committed {}", &c[..7.min(c.len())]);
+        if pending {
+            sync_once(folder, remote);
+            // Edits made during the sync are caught by the check below
+            // (the sync's own writes match the new base: no second sync).
+            pending = false;
+            next_scan = Instant::now();
+        }
+        let mut check_local = false;
+        let wait = next_poll
+            .min(next_scan)
+            .saturating_duration_since(Instant::now());
+        match rx.recv_timeout(wait) {
+            Ok(()) => {
+                let burst = Instant::now();
+                while burst.elapsed() < DEBOUNCE_MAX {
+                    match rx.recv_timeout(DEBOUNCE) {
+                        Ok(()) => continue,
+                        Err(_) => break,
                     }
                 }
-                Err(e) => eprintln!("sync failed: {e:#}"),
+                check_local = true;
+            }
+            Err(RecvTimeoutError::Timeout) => {}
+            // No watcher: nothing will ever be sent.
+            Err(RecvTimeoutError::Disconnected) => std::thread::sleep(wait),
+        }
+        let now = Instant::now();
+        if now >= next_scan {
+            check_local = true;
+            next_scan = now + rescan;
+        }
+        if check_local {
+            match local_changed(folder, &matcher) {
+                Ok(changed) => pending |= changed,
+                Err(e) => eprintln!("scan failed: {e:#}"),
             }
         }
-        let spent = started.elapsed();
-        std::thread::sleep(interval.saturating_sub(spent));
+        if now >= next_poll {
+            next_poll = now + interval;
+            match remote
+                .gh
+                .head_if_changed(&remote.full, &remote.branch, etag.as_deref())
+            {
+                Ok(Poll::NotModified) => {}
+                Ok(Poll::Changed { head, etag: e }) => {
+                    etag = e;
+                    pending |= folder.load_state().map(|s| s.head != head).unwrap_or(true);
+                }
+                Err(e) => eprintln!("checking the repository failed: {e:#}"),
+            }
+        }
     }
 }
 
