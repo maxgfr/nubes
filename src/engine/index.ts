@@ -131,4 +131,6 @@ export class Ignore {
 }
 
 export const MAX_BLOB = 100 * 1024 * 1024;
+/** Largest file an encrypted folder uploads: sealed, it still fits in MAX_BLOB. */
+export const MAX_ENCRYPTED_BLOB = MAX_BLOB - 32 * 1024;
 export const WARN_BLOB = 50 * 1024 * 1024;

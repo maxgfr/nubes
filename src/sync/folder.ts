@@ -7,7 +7,16 @@
  * Safari (macOS, iPadOS) and Firefox do not let a page keep write access to
  * a folder, so there the app offers upload and zip download instead.
  */
-import { blobShaOf, Ignore, loadEngine, type Plan, plan, type Snapshot } from "../engine";
+import {
+  blobShaOf,
+  Ignore,
+  loadEngine,
+  MAX_BLOB,
+  MAX_ENCRYPTED_BLOB,
+  type Plan,
+  plan,
+  type Snapshot,
+} from "../engine";
 import { RefMovedError, type TreeChange } from "../github/client";
 import type { Remote, RemoteState } from "../github/repo";
 import { idbDel, idbGet, idbSet } from "../store/idb";
@@ -203,6 +212,8 @@ export async function syncFolder(
       ignore: ignoreText.split("\n"),
       device,
       stamp: stamp(),
+      // Encryption adds a little: keep the sealed blob under GitHub's limit.
+      maxSize: rs.encrypted ? MAX_ENCRYPTED_BLOB : MAX_BLOB,
     });
 
     // Remote side: one commit.

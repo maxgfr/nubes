@@ -232,7 +232,14 @@ impl GitHub {
         ))
     }
 
-    /// Whether the token can really write: `permissions.push` describes the
+    /// Size of the repository in bytes, as GitHub reports it (updated a while
+    /// after changes; every version counts).
+    pub fn repo_size(&self, full: &str) -> Result<u64> {
+        let v = self.json("GET", &format!("/repos/{full}"), None)?;
+        Ok(v["size"].as_u64().unwrap_or(0) * 1024)
+    }
+
+    /// Whether the token can really write:`permissions.push` describes the
     /// account, not a fine-grained token. Creates an empty blob (harmless,
     /// never referenced), refused with 403 for a Contents: Read token. An
     /// empty repository refuses the git data API (409): nothing to check yet.

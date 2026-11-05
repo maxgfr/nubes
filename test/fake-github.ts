@@ -297,6 +297,8 @@ export function createFakeGitHub(opts: { login?: string; tokens?: string[] } = {
           body.encoding === "base64"
             ? new Uint8Array(Buffer.from(body.content, "base64"))
             : enc.encode(body.content);
+        // GitHub refuses blobs over 100 MiB.
+        if (data.length > 100 * 1024 * 1024) return err(422, "Blob is too large");
         return json({ sha: put(r, { type: "blob", data }) }, 201);
       },
     ],

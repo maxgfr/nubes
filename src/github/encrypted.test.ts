@@ -2,7 +2,8 @@ import { describe, expect, setDefaultTimeout, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { createFakeGitHub } from "../../test/fake-github";
-import { gitBlobSha, loadEngineSync } from "../engine";
+import { newCipher } from "../crypto";
+import { gitBlobSha, loadEngineSync, MAX_BLOB, MAX_ENCRYPTED_BLOB } from "../engine";
 import { GitHub } from "./client";
 import { LockedError, Remote } from "./repo";
 
@@ -141,5 +142,17 @@ describe("encrypted folder", () => {
     const s = await a.state();
     expect(s.files.size).toBe(0);
     expect(s.foreign).toEqual(["README.md"]);
+  });
+});
+
+describe("encrypted size", () => {
+  test("sealing stays within the bound behind MAX_ENCRYPTED_BLOB (sealed_size_max in nubes-core)", async () => {
+    const { cipher } = await newCipher();
+    const bound = (n: number) => n + 1024 + 16 + 16 * (Math.floor(n / 65536) + 1);
+    for (const n of [0, 1, 65535, 65536, 65537, 3 * 65536 + 5]) {
+      const sealed = await cipher.encrypt(new Uint8Array(n).fill(7));
+      expect(sealed.length).toBeLessThanOrEqual(bound(n));
+    }
+    expect(bound(MAX_ENCRYPTED_BLOB)).toBeLessThanOrEqual(MAX_BLOB);
   });
 });

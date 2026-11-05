@@ -120,4 +120,18 @@ mod tests {
         assert!(Cipher::unlock(&key, "wrong").is_err());
         assert!(Cipher::generate().decrypt(&enc).is_err());
     }
+
+    #[test]
+    fn sealed_size_stays_within_the_bound() {
+        let c = Cipher::generate();
+        for n in [0usize, 1, 65535, 65536, 65537, 3 * 65536 + 5] {
+            let sealed = c.encrypt(&vec![7u8; n]).unwrap();
+            let max = nubes_core::sealed_size_max(n as u64);
+            assert!(
+                sealed.len() as u64 <= max,
+                "{n} bytes sealed to {}",
+                sealed.len()
+            );
+        }
+    }
 }

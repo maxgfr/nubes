@@ -82,6 +82,11 @@ pub fn max_blob_size() -> f64 {
     nubes_core::GITHUB_MAX_BLOB as f64
 }
 
+#[wasm_bindgen(js_name = maxEncryptedBlobSize)]
+pub fn max_encrypted_blob_size() -> f64 {
+    nubes_core::GITHUB_MAX_ENCRYPTED as f64
+}
+
 #[wasm_bindgen(js_name = warnBlobSize)]
 pub fn warn_blob_size() -> f64 {
     nubes_core::GITHUB_WARN_BLOB as f64
