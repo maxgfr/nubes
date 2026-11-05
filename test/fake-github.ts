@@ -36,6 +36,8 @@ export interface FakeGitHub {
   /** Every request seen, as "METHOD /path". */
   log: string[];
   tokens: Set<string>;
+  /** Tokens that can read but not write (fine-grained token with Contents: Read-only). */
+  readOnly: Set<string>;
 }
 
 const enc = new TextEncoder();
@@ -62,6 +64,7 @@ function err(status: number, message: string): Response {
 export function createFakeGitHub(opts: { login?: string; tokens?: string[] } = {}): FakeGitHub {
   const login = opts.login ?? "octo";
   const tokens = new Set(opts.tokens ?? ["test-token"]);
+  const readOnly = new Set<string>();
   const repos = new Map<string, Repo>();
   const log: string[] = [];
   let refHook: (() => void) | null = null;
@@ -452,6 +455,8 @@ export function createFakeGitHub(opts: { login?: string; tokens?: string[] } = {
     const auth = req.headers.get("authorization") ?? "";
     const token = auth.replace(/^(Bearer|token)\s+/i, "");
     if (!tokens.has(token)) return err(401, "Bad credentials");
+    if (req.method !== "GET" && readOnly.has(token))
+      return err(403, "Resource not accessible by personal access token");
     for (const [method, re, fn] of routes) {
       if (method !== req.method) continue;
       const m = url.pathname.match(re);
@@ -467,6 +472,7 @@ export function createFakeGitHub(opts: { login?: string; tokens?: string[] } = {
     handle,
     log,
     tokens,
+    readOnly,
     addRepo(full, o = {}) {
       const [owner, name] = full.split("/") as [string, string];
       repos.set(full.toLowerCase(), {

@@ -128,3 +128,46 @@ test("a bad token is refused with a clear message", async ({ page, gh }) => {
   await page.getByRole("button", { name: "Continue" }).click();
   await expect(page.getByRole("alert")).toContainText("refused the token");
 });
+
+test("a read-only token is stopped at the picker, not at the first upload", async ({
+  page,
+  gh,
+}) => {
+  gh.tokens.add("read-only");
+  gh.readOnly.add("read-only");
+  gh.push("octo/files", { "a.txt": "A" });
+  await page.goto("/?nosw");
+  // The token steps are spelled out (GitHub ignores pre-filling parameters).
+  await expect(page.getByText("Only select repositories")).toBeVisible();
+  await page.getByLabel("GitHub token").fill("read-only");
+  await page.getByRole("button", { name: "Continue" }).click();
+  await page.getByRole("button", { name: /octo\/files/ }).click();
+  await expect(page.getByRole("alert")).toContainText("but not write to it");
+  await expect(page.getByText(/files? ·/)).toHaveCount(0);
+});
+
+test("a token that sees only public repositories is told how to fix it", async ({ page, gh }) => {
+  gh.addRepo("octo/site", { private: false });
+  await page.goto("/?nosw");
+  await page.getByLabel("GitHub token").fill("test-token");
+  await page.getByRole("button", { name: "Continue" }).click();
+  await expect(page.getByRole("button", { name: /octo\/site/ })).toBeVisible();
+  // octo/files is private: no warning.
+  await expect(page.locator(".notice")).toHaveCount(0);
+
+  await page.route("https://api.github.com/user/repos**", (route) =>
+    route.fulfill({
+      json: [
+        {
+          full_name: "octo/site",
+          default_branch: "main",
+          private: false,
+          permissions: { push: true },
+        },
+      ],
+    }),
+  );
+  await page.reload();
+  await expect(page.getByText("This token only sees public repositories.")).toBeVisible();
+  await expect(page.locator(".notice")).toContainText("Read and write");
+});

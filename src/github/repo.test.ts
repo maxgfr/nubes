@@ -17,6 +17,26 @@ function setup(prefix = "") {
 
 const bytes = (s: string) => new TextEncoder().encode(s);
 
+describe("GitHub.canWrite", () => {
+  test("true for a read-write token, false for a read-only one, true on an empty repository", async () => {
+    const { fake, gh } = setup();
+    fake.tokens.add("ro");
+    fake.readOnly.add("ro");
+    const ro = new GitHub("ro", {
+      api: "https://api.test",
+      fetch: (input, init) => fake.handle(new Request(input, init)),
+      sleep: async () => {},
+    });
+    // Empty repository: blobs are refused (409), nothing can be checked yet.
+    expect(await gh.canWrite("octo/files")).toBe(true);
+    fake.push("octo/files", { "a.txt": "A" });
+    expect(await gh.canWrite("octo/files")).toBe(true);
+    expect(await ro.canWrite("octo/files")).toBe(false);
+    // The check never moves the branch.
+    expect(fake.commitCount("octo/files")).toBe(1);
+  });
+});
+
 describe("Remote", () => {
   test("an empty repository has no head; ensureMeta creates the first commit", async () => {
     const { fake, remote } = setup();

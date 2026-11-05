@@ -46,9 +46,8 @@ export function SignIn() {
         <li>
           <a href={TOKEN_URL} target="_blank" rel="noopener noreferrer">
             Create a fine-grained token
-          </a>{" "}
-          with access to <b>only that repository</b> and the permission{" "}
-          <b>Contents: Read and write</b>.
+          </a>
+          : <TokenSteps />
         </li>
         <li>Paste it here.</li>
       </ol>
@@ -89,6 +88,30 @@ export function SignIn() {
   );
 }
 
+/**
+ * What to do on GitHub's “new fine-grained token” page, which ignores
+ * pre-filling parameters: the defaults (public repositories, no
+ * permission) give a token nubes cannot use.
+ */
+export function TokenSteps() {
+  return (
+    <ol class="token-steps">
+      <li>Give it a name (“nubes”) and an expiration.</li>
+      <li>
+        Under <b>Repository access</b>, choose <b>Only select repositories</b> and pick your
+        repository.
+      </li>
+      <li>
+        Under <b>Permissions</b>, click <b>Add permissions</b>, check <b>Contents</b>, then set it
+        to <b>Read and write</b>.
+      </li>
+      <li>
+        <b>Generate token</b> and copy it.
+      </li>
+    </ol>
+  );
+}
+
 export function PickRepo() {
   const repos = useSignal<RepoInfo[] | null>(null);
   const manual = useSignal("");
@@ -117,7 +140,11 @@ export function PickRepo() {
     error.value = null;
     try {
       const info = await s.gh.repo(full.trim());
-      if (!info.canPush) throw new Error(`The token cannot write to ${info.fullName}.`);
+      if (!info.canPush || !(await s.gh.canWrite(info.fullName))) {
+        throw new Error(
+          `The token can read ${info.fullName} but not write to it. On GitHub, edit the token: under Permissions, set Contents to “Read and write”.`,
+        );
+      }
       await chooseRepo({
         repo: info.fullName,
         branch: info.defaultBranch,
@@ -131,6 +158,7 @@ export function PickRepo() {
   };
 
   const shown = filterRepos(repos.value ?? [], query.value);
+  const publicOnly = isPublicOnly(repos.value);
 
   return (
     <main class="onboarding">
@@ -142,6 +170,20 @@ export function PickRepo() {
         Signed in as <b>{s?.login}</b>. Pick the repository that will hold your files. A private one
         is best.
       </p>
+      {publicOnly && (
+        <div class="card token-help notice" role="status">
+          <p>
+            <b>This token only sees public repositories.</b> That is GitHub's default. To use a
+            private repository, open{" "}
+            <a href={TOKENS_URL} target="_blank" rel="noopener noreferrer">
+              your fine-grained tokens
+            </a>
+            , edit this one (or create a new one) and:
+          </p>
+          <TokenSteps />
+          <p>Then reload this page, or sign in with the new token.</p>
+        </div>
+      )}
       <div class="card">
         {repos.value === null ? (
           <p class="muted">Loading repositories…</p>
@@ -254,6 +296,14 @@ export function PickRepo() {
       </div>
     </main>
   );
+}
+
+/**
+ * A token that lists repositories but no private one was most likely left
+ * on GitHub's default “Public repositories” access.
+ */
+export function isPublicOnly(repos: { private: boolean }[] | null): boolean {
+  return !!repos && repos.length > 0 && repos.every((r) => !r.private);
 }
 
 /** Repositories whose name contains every word of the query (case-insensitive). */

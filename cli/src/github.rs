@@ -217,6 +217,19 @@ impl GitHub {
         ))
     }
 
+    /// Whether the token can really write: `permissions.push` describes the
+    /// account, not a fine-grained token. Creates an empty blob (harmless,
+    /// never referenced), refused with 403 for a Contents: Read token. An
+    /// empty repository refuses the git data API (409): nothing to check yet.
+    pub fn can_write(&self, full: &str) -> Result<bool> {
+        match self.create_blob(full, b"") {
+            Ok(_) => Ok(true),
+            Err(e) if status_of(&e) == Some(409) => Ok(true),
+            Err(e) if matches!(status_of(&e), Some(403 | 404)) => Ok(false),
+            Err(e) => Err(e),
+        }
+    }
+
     /// The branch's commit, or None if it (or the whole repository) is empty.
     pub fn head(&self, full: &str, branch: &str) -> Result<Option<String>> {
         match self.json(
