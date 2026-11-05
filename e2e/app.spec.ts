@@ -96,6 +96,31 @@ test("the page refuses to talk to anything but GitHub (CSP)", async ({ page }) =
   expect(csp).not.toContain("unsafe-inline");
 });
 
+test("the repository list can be searched, and the token changed", async ({ page, gh }) => {
+  gh.addRepo("octo/photos");
+  gh.addRepo("octo/notes-archive");
+  await page.goto("/?nosw");
+  await page.getByLabel("GitHub token").fill("test-token");
+  await page.getByRole("button", { name: "Continue" }).click();
+  const search = page.getByRole("searchbox", { name: "Search repositories" });
+  await search.fill("NOTES");
+  await expect(page.locator(".repo-item")).toHaveCount(1);
+  await expect(page.locator(".repo-item")).toContainText("octo/notes-archive");
+  await search.fill("nothing-like-this");
+  await expect(page.getByText(/No repository matches/)).toBeVisible();
+  // Enter picks the only match.
+  await search.fill("photo");
+  await search.press("Enter");
+  await expect(page.getByText("Nothing here yet")).toBeVisible();
+
+  // Back to the picker, then a new token.
+  await page.getByRole("button", { name: "Settings" }).click();
+  await page.getByRole("button", { name: "Use another repository" }).click();
+  await page.getByRole("button", { name: "Use another token" }).click();
+  await expect(page.getByLabel("GitHub token")).toBeVisible();
+  await expect(page.getByLabel("GitHub token")).toHaveValue("");
+});
+
 test("a bad token is refused with a clear message", async ({ page, gh }) => {
   void gh;
   await page.goto("/?nosw");

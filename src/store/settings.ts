@@ -93,5 +93,8 @@ export function setDeviceName(name: string): void {
 export const TOKEN_URL =
   "https://github.com/settings/personal-access-tokens/new?name=nubes&description=nubes%20(files%20in%20a%20GitHub%20repository)&contents=write";
 
+/** The user's fine-grained tokens (to change a token's repository access). */
+export const TOKENS_URL = "https://github.com/settings/personal-access-tokens";
+
 /** Pre-filled “new private repository” page. */
 export const NEW_REPO_URL = "https://github.com/new?name=nubes-files&visibility=private";
