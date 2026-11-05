@@ -81,6 +81,28 @@ export function canPickFolder(): boolean {
   return !ios && "webkitdirectory" in document.createElement("input");
 }
 
+const EXT: Record<string, string> = {
+  "image/png": "png",
+  "image/jpeg": "jpg",
+  "image/heic": "heic",
+  "image/heif": "heif",
+  "image/gif": "gif",
+  "image/webp": "webp",
+};
+
+/**
+ * A name for a pasted image or a camera photo. Their own names are generic
+ * ("image.png", "image.jpg"), so they get the date: "Photo 2026-11-05
+ * 14.03.27.jpg". A real file name (a file copied in Finder) is kept.
+ */
+export function capturedName(file: File, prefix: string, index = 0, now = new Date()): string {
+  if (file.name && !/^image(\s*\d*)?\.\w+$/i.test(file.name)) return file.name;
+  const p = (n: number) => String(n).padStart(2, "0");
+  const when = `${now.getFullYear()}-${p(now.getMonth() + 1)}-${p(now.getDate())} ${p(now.getHours())}.${p(now.getMinutes())}.${p(now.getSeconds())}`;
+  const ext = EXT[file.type] ?? file.name.split(".").pop() ?? "bin";
+  return `${prefix} ${when}${index ? ` (${index + 1})` : ""}.${ext}`;
+}
+
 export function isAppleTouch(): boolean {
   if (typeof navigator === "undefined") return false;
   const ua = navigator.userAgent;

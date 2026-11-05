@@ -147,7 +147,8 @@ async function scan(root: DirHandle, base: Base, ignore: Ignore): Promise<Map<st
   return out;
 }
 
-function stamp(d = new Date()): string {
+/** The time in conflict copy names (UTC, minutes), as the CLI writes it. */
+export function stamp(d = new Date()): string {
   const p = (n: number) => String(n).padStart(2, "0");
   return `${d.getUTCFullYear()}${p(d.getUTCMonth() + 1)}${p(d.getUTCDate())}-${p(d.getUTCHours())}${p(d.getUTCMinutes())}`;
 }

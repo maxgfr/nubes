@@ -4,7 +4,7 @@ test("sign in, pick a repository, upload, browse, preview", async ({ page, gh })
   await signIn(page);
   await expect(page.getByText("Nothing here yet")).toBeVisible();
 
-  await page.locator("input[type=file]:not([webkitdirectory])").setInputFiles([
+  await page.locator("input[type=file]:not([webkitdirectory]):not([capture])").setInputFiles([
     { name: "hello.txt", mimeType: "text/plain", buffer: Buffer.from("hello from the iPad\n") },
     { name: "notes.md", mimeType: "text/markdown", buffer: Buffer.from("# notes\n") },
   ]);
@@ -22,7 +22,7 @@ test("sign in, pick a repository, upload, browse, preview", async ({ page, gh })
 
   // Re-uploading the same content commits nothing.
   await page
-    .locator("input[type=file]:not([webkitdirectory])")
+    .locator("input[type=file]:not([webkitdirectory]):not([capture])")
     .setInputFiles([
       { name: "hello.txt", mimeType: "text/plain", buffer: Buffer.from("hello from the iPad\n") },
     ]);
@@ -78,7 +78,7 @@ test("a new folder receives uploads; oversize and ignored files are refused", as
   await page.getByRole("button", { name: /New folder/ }).click();
   await page.getByLabel("Name").fill("Scans 2026");
   await page.getByRole("button", { name: "Create" }).click();
-  await page.locator("input[type=file]:not([webkitdirectory])").setInputFiles([
+  await page.locator("input[type=file]:not([webkitdirectory]):not([capture])").setInputFiles([
     { name: "page1.jpg", mimeType: "image/jpeg", buffer: Buffer.from("jpg") },
     { name: ".DS_Store", mimeType: "application/octet-stream", buffer: Buffer.from("junk") },
   ]);

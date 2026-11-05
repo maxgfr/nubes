@@ -32,10 +32,16 @@ import {
 } from "../sync/folder";
 import { isAppleTouch } from "./drop";
 import { basename, dirname, humanSize, kindOf, mimeOf, timeAgo } from "./format";
-import { IconDownload, IconHistory } from "./icons";
+import { IconDownload, IconHistory, IconPencil } from "./icons";
 import { Modal } from "./Modal";
 
-export function Preview(props: { path: string; onClose: () => void; onHistory: () => void }) {
+export function Preview(props: {
+  path: string;
+  onClose: () => void;
+  onHistory: () => void;
+  /** Opens the editor on the text shown, which is the file's content `sha`. */
+  onEdit?: (text: string, sha: string) => void;
+}) {
   const f = remoteState.value?.files.get(props.path);
   const url = useSignal<string | null>(null);
   const text = useSignal<string | null>(null);
@@ -76,6 +82,15 @@ export function Preview(props: { path: string; onClose: () => void; onHistory: (
       onClose={props.onClose}
       actions={
         <div class="modal-actions">
+          {props.onEdit && kind === "text" && text.value !== null && (
+            <button
+              type="button"
+              class="btn ghost"
+              onClick={() => props.onEdit?.(text.value ?? "", f.sha)}
+            >
+              <IconPencil /> Edit
+            </button>
+          )}
           <button type="button" class="btn ghost" onClick={props.onHistory}>
             <IconHistory /> History
           </button>
@@ -291,6 +306,51 @@ export function Confirm(props: {
   );
 }
 
+/** GitHub's advice: a repository ideally under 1 GB, and under 5 GB. */
+export const SIZE_SOFT = 1024 ** 3;
+export const SIZE_HARD = 5 * 1024 ** 3;
+
+/** The repository's size against GitHub's recommended limits. */
+function Storage() {
+  const size = useSignal<number | null>(null);
+  const r = remote.value;
+  useEffect(() => {
+    if (!r) return;
+    r.gh.repo(r.target.full).then(
+      (info) => {
+        size.value = info.size;
+      },
+      () => {},
+    );
+  }, [r]);
+  if (size.value === null) return null;
+  const n = size.value;
+  const level = n >= SIZE_HARD ? "over" : n >= SIZE_SOFT ? "warn" : "ok";
+  return (
+    <div class={`storage storage-${level}`}>
+      <div class="row between">
+        <b>Storage</b>
+        <span>
+          {humanSize(n)} <span class="muted">of 5 GB recommended</span>
+        </span>
+      </div>
+      {/* The figure above says it in words; the bar only shows it. */}
+      <div class="gauge" aria-hidden="true">
+        <span style={{ width: `${Math.min(100, (n / SIZE_HARD) * 100)}%` }} />
+        <i style={{ left: `${(SIZE_SOFT / SIZE_HARD) * 100}%` }} title="1 GB" />
+      </div>
+      <p class="fine">
+        {level === "ok"
+          ? "GitHub recommends staying under 1 GB (marked), and under 5 GB. Every version is kept, so deleted files still count."
+          : level === "warn"
+            ? "Warning: over 1 GB. GitHub recommends staying under 5 GB: consider a second repository (or a folder of another one) for large files such as videos."
+            : "Over 5 GB: GitHub may ask you to reduce this repository. Move large files to another repository."}{" "}
+        GitHub updates this figure a while after changes.
+      </p>
+    </div>
+  );
+}
+
 export function Settings(props: { onClose: () => void }) {
   const device = useSignal(deviceName());
   const l = link.value;
@@ -346,6 +406,7 @@ export function Settings(props: { onClose: () => void }) {
             Sign out
           </button>
         </div>
+        <Storage />
         <h3>Other devices</h3>
         <ul class="tips">
           <li>

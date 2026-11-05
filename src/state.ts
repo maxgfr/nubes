@@ -5,7 +5,16 @@
  * the page is visible, so what other devices push shows up on its own.
  */
 import { batch, computed, signal } from "@preact/signals";
-import { blobShaOf, Ignore, isSafePath, loadEngine, MAX_BLOB } from "./engine";
+import {
+  blobShaOf,
+  gitBlobSha,
+  Ignore,
+  isSafePath,
+  loadEngine,
+  MAX_BLOB,
+  plan,
+  type Snapshot,
+} from "./engine";
 import { GitHub, GitHubError, type TreeChange } from "./github/client";
 import { Remote, type RemoteState } from "./github/repo";
 import {
@@ -23,6 +32,7 @@ import {
   syncPinCache,
 } from "./store/offline";
 import { deviceName, type Link, loadLink, loadToken, saveLink, saveToken } from "./store/settings";
+import { stamp } from "./sync/folder";
 import { basename, joinPath } from "./ui/format";
 import { filesUnder } from "./ui/listing";
 
@@ -591,24 +601,114 @@ export function remove(paths: string[]): Promise<void> {
   }).then(() => undefined);
 }
 
+/** The changes that move `from` (a file or folder) to `to`, on state `s`. */
+function moveChanges(s: RemoteState, from: string, to: string): TreeChange[] {
+  if (!isSafePathLoose(to)) throw new Error(`“${to}” is not a valid name`);
+  if (to === from || to.startsWith(`${from}/`))
+    throw new Error(`${basename(from)} cannot go inside itself`);
+  const src = filesUnder(s.files, from);
+  if (src.length === 0) throw new Error(`${basename(from)} no longer exists`);
+  if (filesUnder(s.files, to).length > 0) throw new Error(`${to} already exists`);
+  const out: TreeChange[] = [];
+  for (const p of src) {
+    const f = s.files.get(p);
+    if (!f) continue;
+    out.push({ path: to + p.slice(from.length), sha: f.sha, mode: f.mode }, { path: p, sha: null });
+  }
+  return out;
+}
+
 /** Renames or moves a file or folder. Content is not re-uploaded. */
 export function move(from: string, to: string): Promise<void> {
   return serial("Moving", async () => {
-    if (!isSafePathLoose(to)) throw new Error(`“${to}” is not a valid name`);
-    await commit((s) => {
-      const src = filesUnder(s.files, from);
-      if (src.length === 0) throw new Error(`${basename(from)} no longer exists`);
-      if (filesUnder(s.files, to).length > 0) throw new Error(`${to} already exists`);
-      const out: TreeChange[] = [];
-      for (const p of src) {
-        const f = s.files.get(p);
-        if (!f) continue;
-        const dest = to + p.slice(from.length);
-        out.push({ path: dest, sha: f.sha, mode: f.mode }, { path: p, sha: null });
-      }
-      return out;
-    }, `nubes: move ${from} to ${to} (from ${deviceName()})`);
+    await commit(
+      (s) => moveChanges(s, from, to),
+      `nubes: move ${from} to ${to} (from ${deviceName()})`,
+    );
   }).then(() => undefined);
+}
+
+/** Moves files and folders into `dir` ("" for the top folder), in one commit. */
+export function moveInto(paths: string[], dir: string): Promise<void> {
+  return serial("Moving", async () => {
+    const moving = paths.filter(
+      (p) => (p.includes("/") ? p.slice(0, p.lastIndexOf("/")) : "") !== dir,
+    );
+    if (moving.length === 0) return;
+    await commit(
+      (s) => moving.flatMap((p) => moveChanges(s, p, joinPath(dir, basename(p)))),
+      `nubes: move ${moving.length} item${moving.length === 1 ? "" : "s"} to ${dir || "the top folder"} (from ${deviceName()})`,
+    );
+    toast(
+      `Moved ${moving.length} item${moving.length === 1 ? "" : "s"} to ${dir || "the top folder"}`,
+    );
+  }).then(() => undefined);
+}
+
+/**
+ * Saves edited text over `path`, which held `baseSha` when the edit began.
+ * If it changed elsewhere meanwhile, the edit is saved as a conflict copy
+ * beside it (the engine's rule, as for a sync). Returns where it went.
+ */
+export function saveText(
+  path: string,
+  baseSha: string | null,
+  text: string,
+): Promise<string | null> {
+  return serial("Saving", async () => {
+    await loadEngine();
+    const r = remote.value;
+    if (!r) throw new Error("not connected");
+    const data = new TextEncoder().encode(text);
+    const sha = gitBlobSha(data);
+    let target = path;
+    await commit(
+      async (s) => {
+        const now: Snapshot = {};
+        for (const [p, f] of s.files) now[p] = { sha: f.sha, size: f.size };
+        const base: Snapshot = { ...now };
+        if (baseSha) base[path] = { sha: baseSha, size: 0 };
+        else delete base[path];
+        const p = plan({
+          base,
+          local: { ...now, [path]: { sha, size: data.length } },
+          remote: now,
+          device: deviceName(),
+          stamp: stamp(),
+        });
+        const a = p.actions.find((x) => x.path === path);
+        if (!a) return [];
+        if (a.op === "conflict") target = a.renamedTo;
+        else if (a.op === "upload") target = path;
+        else throw new Error(`${basename(path)} cannot be saved here`);
+        if (!s.blobs.has(sha)) await r.gh.createBlob(r.target.full, data);
+        return [{ path: target, sha, mode: s.files.get(path)?.mode ?? "100644" }];
+      },
+      message({ [baseSha ? "updated" : "added"]: 1 }),
+    );
+    toast(
+      target === path
+        ? `Saved ${basename(path)}`
+        : `${basename(path)} changed elsewhere meanwhile: your text is saved as ${basename(target)}`,
+    );
+    return target;
+  }).then((t) => t ?? null);
+}
+
+/** Brings back a deleted file as it was in commit `before`. Its content is still in the repository. */
+export function restoreDeleted(path: string, before: string): Promise<boolean> {
+  return serial("Restoring", async () => {
+    const r = remote.value;
+    if (!r) throw new Error("not connected");
+    const sha = await r.gh.fileAt(r.target.full, r.full(path), before);
+    if (!sha) throw new Error(`${basename(path)} is not in that version`);
+    await commit((s) => {
+      if (s.files.has(path)) throw new Error(`${path} exists again`);
+      return [{ path, sha, mode: "100644" }];
+    }, `nubes: restore ${path} (from ${deviceName()})`);
+    toast(`Restored ${path}`);
+    return true;
+  }).then((ok) => ok ?? false);
 }
 
 /** Makes an older version of a file the current one. */
@@ -659,12 +759,27 @@ export async function downloadFile(path: string): Promise<void> {
 }
 
 /** Downloads a folder (or everything) as a zip. */
-export async function downloadZip(dir: string): Promise<void> {
+export function downloadZip(dir: string): Promise<void> {
   const s = remoteState.value;
   const l = link.value;
-  if (!s || !l) return;
+  if (!s || !l) return Promise.resolve();
   const paths = dir ? filesUnder(s.files, dir) : [...s.files.keys()];
-  if (paths.length === 0) return;
+  return zipFiles(paths, dir, `${dir ? basename(dir) : l.repo.split("/")[1]}.zip`);
+}
+
+/** Downloads some files and folders of `dir` as one zip. */
+export function downloadSelection(items: string[], dir: string): Promise<void> {
+  const s = remoteState.value;
+  if (!s) return Promise.resolve();
+  const paths = [...new Set(items.flatMap((p) => filesUnder(s.files, p)))];
+  const name = items.length === 1 ? basename(items[0] as string) : dir ? basename(dir) : "files";
+  return zipFiles(paths, dir, `${name}.zip`);
+}
+
+/** Zips `paths`, named relative to `dir`. */
+async function zipFiles(paths: string[], dir: string, name: string): Promise<void> {
+  const s = remoteState.value;
+  if (!s || paths.length === 0) return;
   try {
     const { zip } = await import("./ui/zip");
     let done = 0;
@@ -681,7 +796,7 @@ export async function downloadZip(dir: string): Promise<void> {
         },
       })),
     );
-    saveBlob(blob, `${dir ? basename(dir) : l.repo.split("/")[1]}.zip`);
+    saveBlob(blob, name);
   } catch (err) {
     fail(err);
   } finally {
