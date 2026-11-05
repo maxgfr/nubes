@@ -3,8 +3,8 @@ import { useSignal } from "@preact/signals";
 import { useEffect } from "preact/hooks";
 import type { RepoInfo } from "../github/client";
 import { normalizePrefix } from "../github/repo";
-import { chooseRepo, describeError, session, signIn } from "../state";
-import { NEW_REPO_URL, TOKEN_URL } from "../store/settings";
+import { chooseRepo, describeError, session, signIn, signOut } from "../state";
+import { NEW_REPO_URL, TOKEN_URL, TOKENS_URL } from "../store/settings";
 import { IconCloud } from "./icons";
 
 export function SignIn() {
@@ -93,6 +93,7 @@ export function PickRepo() {
   const repos = useSignal<RepoInfo[] | null>(null);
   const manual = useSignal("");
   const prefix = useSignal("");
+  const query = useSignal("");
   const error = useSignal<string | null>(null);
   const pending = useSignal(false);
   const s = session.value;
@@ -129,6 +130,8 @@ export function PickRepo() {
     }
   };
 
+  const shown = filterRepos(repos.value ?? [], query.value);
+
   return (
     <main class="onboarding">
       <div class="brand-hero">
@@ -148,8 +151,37 @@ export function PickRepo() {
             repository, or type its name below.
           </p>
         ) : (
+          <form
+            class="repo-search"
+            onSubmit={(e) => {
+              e.preventDefault();
+              const only = shown.length === 1 ? shown[0] : undefined;
+              if (only) void pick(only.fullName);
+            }}
+          >
+            <label class="visually-hidden" for="repo-search">
+              Search repositories
+            </label>
+            <input
+              id="repo-search"
+              type="search"
+              placeholder={`Search ${repos.value.length} repositories`}
+              value={query.value}
+              spellcheck={false}
+              autocapitalize="off"
+              autocomplete="off"
+              onInput={(e) => {
+                query.value = e.currentTarget.value;
+              }}
+            />
+            {shown.length === 0 && (
+              <p class="muted small">No repository matches “{query.value.trim()}”.</p>
+            )}
+          </form>
+        )}
+        {shown.length > 0 && (
           <ul class="repo-list">
-            {repos.value.map((r) => (
+            {shown.map((r) => (
               <li key={r.fullName}>
                 <button
                   type="button"
@@ -207,6 +239,29 @@ export function PickRepo() {
           </p>
         )}
       </div>
+      <div class="card token-help">
+        <p>
+          <b>Your private repository is missing?</b> The token only sees the repositories it was
+          given. Change its “Repository access” on GitHub (
+          <a href={TOKENS_URL} target="_blank" rel="noopener noreferrer">
+            your fine-grained tokens
+          </a>
+          ), then reload this page, or sign in with another token.
+        </p>
+        <button type="button" class="btn" onClick={() => void signOut()}>
+          Use another token
+        </button>
+      </div>
     </main>
   );
+}
+
+/** Repositories whose name contains every word of the query (case-insensitive). */
+export function filterRepos<T extends { fullName: string }>(repos: T[], query: string): T[] {
+  const words = query.toLowerCase().split(/\s+/).filter(Boolean);
+  if (words.length === 0) return repos;
+  return repos.filter((r) => {
+    const name = r.fullName.toLowerCase();
+    return words.every((w) => name.includes(w));
+  });
 }
