@@ -213,11 +213,11 @@ export async function syncFolder(
       if (a.op === "upload" || (a.op === "conflict" && a.upload)) {
         const sha = a.op === "upload" ? a.sha : a.localSha;
         const dest = a.op === "upload" ? a.path : a.renamedTo;
-        if (!rs.blobs.has(sha)) {
+        if (!r.has(sha, rs)) {
           progress(`Uploading ${++n}/${toSend.length}`);
           const f = await readFile(root, a.path);
           if ((await blobShaOf(f)) !== sha) throw new Error(`${a.path} changed during the sync`);
-          await r.gh.createBlob(r.target.full, new Uint8Array(await f.arrayBuffer()));
+          await r.put(new Uint8Array(await f.arrayBuffer()), sha, rs);
         }
         changes.push({ path: dest, sha, mode: rs.files.get(dest)?.mode ?? "100644" });
       } else if (a.op === "deleteRemote") {
@@ -228,7 +228,7 @@ export async function syncFolder(
     if (changes.length > 0 && rs.head && rs.tree) {
       progress("Committing");
       try {
-        head = await r.commit(changes, `nubes: sync from ${device}`, rs.head, rs.tree);
+        head = await r.commit(changes, `nubes: sync from ${device}`, rs);
       } catch (err) {
         if (err instanceof RefMovedError) continue;
         throw err;
@@ -237,8 +237,7 @@ export async function syncFolder(
 
     // Local side.
     const known = new Map<string, { sha: string; mtime: number; size: number }>(local);
-    const get = async (sha: string) =>
-      new Blob([(await r.gh.blob(r.target.full, sha)) as BlobPart]);
+    const get = async (sha: string) => new Blob([(await r.get(sha)) as BlobPart]);
     let d = 0;
     const toGet = p.actions.filter((a) => a.op === "download" || a.op === "conflict").length;
     for (const a of p.actions) {

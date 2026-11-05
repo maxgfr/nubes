@@ -204,6 +204,14 @@ pub fn run(folder: &Folder, remote: &Remote<'_>, opts: &Options) -> Result<Outco
             remote.ensure_meta(&rstate)?;
             rstate = remote.state()?;
         }
+        if !opts.dry_run {
+            remote.unlock(&rstate)?;
+        }
+        if attempt == 0 && !opts.quiet {
+            for f in &rstate.foreign {
+                eprintln!("- {f}: left alone, not written by nubes in this encrypted folder");
+            }
+        }
         let local = scan(&folder.root, &state.files, &matcher)?;
         for s in &local.skipped {
             eprintln!("- {s}: skipped, not a valid nubes path");
@@ -231,12 +239,9 @@ pub fn run(folder: &Folder, remote: &Remote<'_>, opts: &Options) -> Result<Outco
         for a in &p.actions {
             match a {
                 Action::Upload { path, sha, .. } => {
-                    if !rstate.blobs.contains(sha) {
+                    if !remote.has(sha, &rstate) {
                         let data = read_verified(&folder.root, path, sha)?;
-                        let got = remote.gh.create_blob(&remote.full, &data)?;
-                        if &got != sha {
-                            bail!("GitHub stored {path} as {got}, expected {sha}");
-                        }
+                        remote.put(&data, sha, &rstate)?;
                     }
                     changes.push(Change {
                         path: path.clone(),
@@ -256,9 +261,9 @@ pub fn run(folder: &Folder, remote: &Remote<'_>, opts: &Options) -> Result<Outco
                     upload: true,
                     ..
                 } => {
-                    if !rstate.blobs.contains(local_sha) {
+                    if !remote.has(local_sha, &rstate) {
                         let data = read_verified(&folder.root, path, local_sha)?;
-                        remote.gh.create_blob(&remote.full, &data)?;
+                        remote.put(&data, local_sha, &rstate)?;
                     }
                     changes.push(Change {
                         path: renamed_to.clone(),
@@ -273,9 +278,8 @@ pub fn run(folder: &Folder, remote: &Remote<'_>, opts: &Options) -> Result<Outco
         let new_head = if changes.is_empty() {
             rstate.head.clone()
         } else {
-            let tree = rstate.tree.clone().unwrap_or_default();
             let msg = commit_message(&p, &rstate, &folder.config.device);
-            match remote.commit(&changes, &msg, &head, &tree) {
+            match remote.commit(&changes, &msg, &rstate) {
                 Ok(c) => Some(c),
                 Err(e) if e.downcast_ref::<RefMoved>().is_some() => {
                     if !opts.quiet {
@@ -306,7 +310,7 @@ pub fn run(folder: &Folder, remote: &Remote<'_>, opts: &Options) -> Result<Outco
                         failed = true;
                         continue;
                     }
-                    let data = remote.gh.blob(&remote.full, sha)?;
+                    let data = remote.get(sha)?;
                     if nubes_core::git_blob_sha(&data) != *sha {
                         bail!("downloaded {path} does not match its id {sha}");
                     }
@@ -345,7 +349,10 @@ pub fn run(folder: &Folder, remote: &Remote<'_>, opts: &Options) -> Result<Outco
                         .with_context(|| format!("renaming {path} to {renamed_to}"))?;
                     known.insert(renamed_to.clone(), local_sha.clone());
                     known.remove(path);
-                    let data = remote.gh.blob(&remote.full, remote_sha)?;
+                    let data = remote.get(remote_sha)?;
+                    if nubes_core::git_blob_sha(&data) != *remote_sha {
+                        bail!("downloaded {path} does not match its id {remote_sha}");
+                    }
                     let exec = rstate.files.get(path).is_some_and(|f| f.mode == "100755");
                     writer.write(path, &data, exec)?;
                     known.insert(path.clone(), remote_sha.clone());

@@ -80,6 +80,7 @@ cd ~/Documents/cloud
 nubes init you/nubes-files       # or you/repo:sub/folder, --branch name, --device name
 nubes status                     # what a sync would do
 nubes sync                       # two-way, one commit
+nubes init you/vault --encrypt   # a new folder, encrypted end to end with a passphrase
 nubes watch                      # sync within seconds of a change, while running
 nubes service install            # the same in the background, from every login
 ```
@@ -93,11 +94,23 @@ nubes service install            # the same in the background, from every login
 | `nubes log [path]` | Commits that changed a path |
 | `nubes restore <path> --at <commit>` | Write an older version into the folder (then `nubes sync`) |
 | `nubes whoami` | Account and token source in use |
+| `nubes unlock` / `nubes lock` | Enter an encrypted folder's passphrase (the device then keeps its key) / forget the key. `NUBES_PASSPHRASE` works too |
 | `nubes skill` | Print the agent skill |
 
 The folder's state lives in `.nubes/` (config and the last synced snapshot).
 Without `state.json` the next sync sees both sides as new: identical files
 match, differing ones become conflict copies, nothing is deleted.
+
+## Encryption
+
+A folder can be encrypted end to end when it is created: `nubes init
+owner/repo --encrypt` (or `owner/repo:folder`), or "Encrypt the files end to
+end" when choosing the repository in the web app. Each file is stored as
+`<name>.age` ([age](https://age-encryption.org) encryption); its key is in the
+repository, locked by your passphrase, which each device asks for once.
+GitHub then sees file names and sizes, not contents. A plain folder cannot be
+converted: create a new one and copy the files. See [`FORMAT.md`](FORMAT.md)
+and [`SECURITY.md`](SECURITY.md).
 
 ## Agent skill
 

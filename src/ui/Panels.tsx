@@ -9,6 +9,8 @@ import {
   dismissToast,
   fetchBlob,
   link,
+  locked,
+  lockFolder,
   move,
   remote,
   remoteState,
@@ -137,7 +139,7 @@ export function History(props: { path: string; onClose: () => void }) {
   useEffect(() => {
     if (!r) return;
     r.gh
-      .history(r.target.full, r.target.branch, r.full(props.path))
+      .history(r.target.full, r.target.branch, r.storedPath(props.path))
       .then((c) => {
         commits.value = c;
       })
@@ -147,7 +149,7 @@ export function History(props: { path: string; onClose: () => void }) {
   }, [props.path]);
   const versionAt = async (c: CommitInfo) => {
     if (!r) return null;
-    const sha = await r.gh.fileAt(r.target.full, r.full(props.path), c.sha);
+    const sha = await r.versionAt(props.path, c.sha);
     if (!sha) toast(`${basename(props.path)} did not exist in that version`, "error");
     return sha;
   };
@@ -406,6 +408,26 @@ export function Settings(props: { onClose: () => void }) {
             Sign out
           </button>
         </div>
+        {remoteState.value?.encrypted && (
+          <div class="row between">
+            <span>
+              <b>Encrypted end to end.</b>{" "}
+              <span class="muted">File names are visible on GitHub, their contents are not.</span>
+            </span>
+            {!locked.value && (
+              <button
+                type="button"
+                class="btn small"
+                onClick={() => {
+                  lockFolder();
+                  props.onClose();
+                }}
+              >
+                Forget the key here
+              </button>
+            )}
+          </div>
+        )}
         <Storage />
         <h3>Other devices</h3>
         <ul class="tips">

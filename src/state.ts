@@ -5,6 +5,7 @@
  * the page is visible, so what other devices push shows up on its own.
  */
 import { batch, computed, signal } from "@preact/signals";
+import type { Cipher } from "./crypto";
 import {
   blobShaOf,
   gitBlobSha,
@@ -31,7 +32,18 @@ import {
   saveSnapshot,
   syncPinCache,
 } from "./store/offline";
-import { deviceName, type Link, loadLink, loadToken, saveLink, saveToken } from "./store/settings";
+import {
+  deviceName,
+  forgetKey,
+  forgetKeys,
+  type Link,
+  loadKey,
+  loadLink,
+  loadToken,
+  saveKey,
+  saveLink,
+  saveToken,
+} from "./store/settings";
 import { stamp } from "./sync/folder";
 import { basename, joinPath } from "./ui/format";
 import { filesUnder } from "./ui/listing";
@@ -88,11 +100,78 @@ export const pins = signal<string[]>(link.value ? loadPins(link.value) : []);
 /** Progress of saving pinned folders for offline use. */
 export const pinStatus = signal<string | null>(null);
 
+/** Keys of the encrypted folders unlocked in this tab, by link. */
+const ciphers = new Map<string, Cipher>();
+const cipherKey = (l: Link) => `${l.repo}#${l.branch}#${l.prefix}`;
+/** Bumped when a folder is unlocked or locked (the key is not a signal). */
+const keyVersion = signal(0);
+
 export const remote = computed(() => {
   const s = session.value;
   const l = link.value;
-  return s && l ? new Remote(s.gh, { full: l.repo, branch: l.branch, prefix: l.prefix }) : null;
+  if (!s || !l) return null;
+  const r = new Remote(s.gh, { full: l.repo, branch: l.branch, prefix: l.prefix });
+  r.cipher = ciphers.get(cipherKey(l)) ?? null;
+  return r;
 });
+
+/** The folder is encrypted and its key is not on this device yet. */
+export const locked = computed(() => {
+  void keyVersion.value;
+  return !!remoteState.value?.encrypted && !remote.value?.cipher;
+});
+
+/** Opens the key this device kept for the folder, if any. */
+async function restoreKey(l: Link): Promise<void> {
+  const secret = loadKey(l);
+  if (!secret || ciphers.has(cipherKey(l))) return;
+  try {
+    const { cipherFor } = await import("./crypto");
+    keep(l, await cipherFor(secret), false);
+  } catch {
+    forgetKey(l);
+  }
+}
+
+function keep(l: Link, c: Cipher, save: boolean): void {
+  ciphers.set(cipherKey(l), c);
+  if (save) saveKey(l, c.secret, loadToken()?.remember ?? false);
+  const r = remote.value;
+  if (r && link.value === l) r.cipher = c;
+  keyVersion.value++;
+}
+
+/** Opens an encrypted folder with its passphrase; this device then keeps its key. */
+export async function unlockFolder(passphrase: string): Promise<void> {
+  const r = remote.value;
+  const l = link.value;
+  if (!r || !l) throw new Error("not connected");
+  const s = await r.state();
+  keep(l, await r.unlock(s, passphrase), true);
+  await refresh(true);
+}
+
+/** Forgets the key of the current folder on this device. */
+export function lockFolder(): void {
+  const l = link.value;
+  if (!l) return;
+  forgetKey(l);
+  ciphers.delete(cipherKey(l));
+  const r = remote.value;
+  if (r) r.cipher = null;
+  keyVersion.value++;
+}
+
+/** Links a new, empty folder and encrypts it end to end with `passphrase`. */
+export async function createEncrypted(l: Link, passphrase: string): Promise<void> {
+  const s = session.value;
+  if (!s) throw new Error("not signed in");
+  const r = new Remote(s.gh, { full: l.repo, branch: l.branch, prefix: l.prefix });
+  const c = await r.initEncryption(passphrase);
+  ciphers.set(cipherKey(l), c);
+  saveKey(l, c.secret, loadToken()?.remember ?? false);
+  await chooseRepo(l);
+}
 
 let toastId = 0;
 export function toast(text: string, tone: Toast["tone"] = "info"): void {
@@ -131,6 +210,9 @@ export async function signIn(token: string, remember: boolean): Promise<void> {
   saveToken(token.trim(), remember);
   session.value = { gh, login };
   void loadEngine();
+  // Back after a sign-out: the folder is still linked, read it now (not at the next poll).
+  const l = link.value;
+  if (l) void restoreKey(l).then(() => refresh(true));
 }
 
 /** Restores the session saved on this device, if any. */
@@ -139,6 +221,7 @@ export async function resume(): Promise<void> {
   if (!saved) return;
   const l = link.value;
   if (l) void pendingFiles(l).then((p) => (pendingCount.value = p.length));
+  if (l) await restoreKey(l);
   if (l && globalThis.navigator?.onLine === false) {
     // Offline: open the folder as last seen; the login is read once back online.
     session.value = { gh: new GitHub(saved.token), login: "" };
@@ -163,6 +246,9 @@ export async function resume(): Promise<void> {
 
 export async function signOut(): Promise<void> {
   saveToken(null);
+  forgetKeys();
+  ciphers.clear();
+  keyVersion.value++;
   const l = link.value;
   if (l) await forgetOffline(l);
   batch(() => {
@@ -184,6 +270,7 @@ export async function chooseRepo(next: Link | null): Promise<void> {
   });
   if (next) {
     pendingCount.value = (await pendingFiles(next)).length;
+    await restoreKey(next);
     await refresh(true);
   }
 }
@@ -285,7 +372,7 @@ export async function fetchBlob(sha: string, type = "application/octet-stream"):
   const kept = l ? await pinnedBlob(l, sha) : null;
   const blob = kept
     ? new Blob([kept], { type })
-    : new Blob([(await r.gh.blob(r.target.full, sha)) as BlobPart], { type });
+    : new Blob([(await r.get(sha)) as BlobPart], { type });
   while (blobCacheBytes + blob.size > 150 * 1024 * 1024 && blobCache.size) {
     const [k, v] = blobCache.entries().next().value as [string, Blob];
     blobCache.delete(k);
@@ -458,13 +545,9 @@ function uploadNow(picked: { path: string; file: Blob }[], dir: string): Promise
             settle(it.id, { status: "unchanged" });
             continue;
           }
-          if (!s.blobs.has(sha)) {
+          if (!r.has(sha, s)) {
             setUpload(it.id, { status: "uploading" });
-            const got = await r.gh.createBlob(
-              r.target.full,
-              new Uint8Array(await it.file.arrayBuffer()),
-            );
-            if (got !== sha) throw new Error(`GitHub stored ${got}, expected ${sha}`);
+            await r.put(new Uint8Array(await it.file.arrayBuffer()), sha, s);
           }
           ready.push({ id: it.id, path: it.path, sha, mode: existing?.mode ?? "100644" });
           setUpload(it.id, { status: "ready" });
@@ -544,7 +627,8 @@ let pinAgain = false;
 /** Brings the offline copies in line with the pinned folders and the current tree. */
 export async function updatePins(): Promise<void> {
   const l = link.value;
-  if (!l) return;
+  // A locked folder's files cannot be read yet: they are kept once it is unlocked.
+  if (!l || locked.value) return;
   if (pinning) {
     pinAgain = true;
     return;
@@ -681,7 +765,7 @@ export function saveText(
         if (a.op === "conflict") target = a.renamedTo;
         else if (a.op === "upload") target = path;
         else throw new Error(`${basename(path)} cannot be saved here`);
-        if (!s.blobs.has(sha)) await r.gh.createBlob(r.target.full, data);
+        await r.put(data, sha, s);
         return [{ path: target, sha, mode: s.files.get(path)?.mode ?? "100644" }];
       },
       message({ [baseSha ? "updated" : "added"]: 1 }),
@@ -700,7 +784,7 @@ export function restoreDeleted(path: string, before: string): Promise<boolean> {
   return serial("Restoring", async () => {
     const r = remote.value;
     if (!r) throw new Error("not connected");
-    const sha = await r.gh.fileAt(r.target.full, r.full(path), before);
+    const sha = await r.versionAt(path, before);
     if (!sha) throw new Error(`${basename(path)} is not in that version`);
     await commit((s) => {
       if (s.files.has(path)) throw new Error(`${path} exists again`);

@@ -2,6 +2,7 @@
 
 mod config;
 mod creds;
+mod crypt;
 mod github;
 mod scan;
 mod service;
@@ -70,7 +71,14 @@ enum Cmd {
         /// Name of this device in commit messages and conflict copies.
         #[arg(long)]
         device: Option<String>,
+        /// Encrypt the files end to end with a passphrase (a new, empty folder only).
+        #[arg(long)]
+        encrypt: bool,
     },
+    /// Enter the passphrase of an encrypted folder; this device then keeps its key.
+    Unlock,
+    /// Forget the key of an encrypted folder on this device.
+    Lock,
     /// Show what a sync would do, without changing anything.
     Status,
     /// Two-way sync.
@@ -195,6 +203,7 @@ fn run(cli: Cli) -> Result<()> {
             target,
             branch,
             device,
+            encrypt,
         } => {
             let root = start_dir(&cli.dir)?;
             std::fs::create_dir_all(&root)?;
@@ -213,12 +222,30 @@ fn run(cli: Cli) -> Result<()> {
                 prefix: prefix.clone(),
                 device: device.unwrap_or_else(util::device_name),
             };
-            let folder = Folder::create(&root, config)?;
             let remote = Remote::new(&gh, &repo, &branch, &prefix);
+            if encrypt {
+                let state = remote.state()?;
+                if state.encrypted {
+                    bail!("{target} is already encrypted: run `nubes init {target}` without --encrypt");
+                }
+                if !state.files.is_empty() {
+                    bail!("{target} already has plain files: encryption is for a new folder (a new repository, or {repo}:a-new-folder)");
+                }
+                eprintln!("Choose the passphrase of this folder. Every device asks for it once; without it, the files cannot be read back (nobody can reset it).");
+                let pass = crypt::passphrase("Passphrase: ", true)?;
+                remote.init_encryption(&pass)?;
+                println!(
+                    "{target} is now encrypted end to end (key stored in {})",
+                    creds::store_name()
+                );
+            }
             let state = remote.state()?;
             if remote.ensure_meta(&state)? {
                 println!("initialized {repo} for nubes");
             }
+            // Asks the passphrase now (in a terminal) rather than at the first sync.
+            remote.unlock(&state)?;
+            let folder = Folder::create(&root, config)?;
             let where_ = if prefix.is_empty() {
                 String::new()
             } else {
@@ -229,6 +256,32 @@ fn run(cli: Cli) -> Result<()> {
                 folder.root.display(),
                 state.files.len()
             );
+        }
+        Cmd::Unlock => {
+            let folder = Folder::find(&start_dir(&cli.dir)?)?;
+            let gh = client(cli.api)?;
+            let c = &folder.config;
+            let remote = Remote::new(&gh, &c.repo, &c.branch, &c.prefix);
+            let state = remote.state()?;
+            if !state.encrypted {
+                println!("this folder is not encrypted");
+                return Ok(());
+            }
+            creds::remove_key(&c.repo, &c.prefix)?;
+            remote.unlock(&state)?;
+            println!("unlocked; the key is kept in {}", creds::store_name());
+        }
+        Cmd::Lock => {
+            let folder = Folder::find(&start_dir(&cli.dir)?)?;
+            let c = &folder.config;
+            if creds::remove_key(&c.repo, &c.prefix)? {
+                println!(
+                    "key removed from {}: the next sync asks for the passphrase",
+                    creds::store_name()
+                );
+            } else {
+                println!("no key stored for this folder");
+            }
         }
         Cmd::Status => sync_cmd(&cli.dir, cli.api, Direction::Both, true)?,
         Cmd::Sync { dry_run } => sync_cmd(&cli.dir, cli.api, Direction::Both, dry_run)?,
@@ -285,7 +338,13 @@ fn run(cli: Cli) -> Result<()> {
             let gh = client(cli.api)?;
             let c = &folder.config;
             let remote = Remote::new(&gh, &c.repo, &c.branch, &c.prefix);
-            let p = remote.repo_path(path.as_deref().unwrap_or("").trim_matches('/'));
+            let path = path.as_deref().unwrap_or("").trim_matches('/').to_string();
+            let state = remote.state()?;
+            let p = if state.files.contains_key(&path) {
+                remote.stored_path(&path)
+            } else {
+                remote.repo_path(&path)
+            };
             let p = p.trim_end_matches('/');
             for commit in gh.history(&c.repo, &c.branch, p, limit)? {
                 let first = commit.message.lines().next().unwrap_or_default();
@@ -306,14 +365,19 @@ fn run(cli: Cli) -> Result<()> {
             if !nubes_core::is_safe_path(&path) {
                 bail!("invalid path {path:?}");
             }
-            let Some(sha) = gh.file_at(&c.repo, &remote.repo_path(&path), &at)? else {
+            let state = remote.state()?;
+            remote.unlock(&state)?;
+            let Some(sha) = remote.version_at(&path, &at)? else {
                 bail!("{path} does not exist at {at}");
             };
             if sync::local_sha(&folder, &path)?.as_deref() == Some(sha.as_str()) {
                 println!("{path} already has that content");
                 return Ok(());
             }
-            let data = gh.blob(&c.repo, &sha)?;
+            let data = remote.get(&sha)?;
+            if nubes_core::git_blob_sha(&data) != sha {
+                bail!("the content of {path} does not match its id {sha}");
+            }
             let dest = folder.root.join(&path);
             if let Some(d) = dest.parent() {
                 std::fs::create_dir_all(d)?;
