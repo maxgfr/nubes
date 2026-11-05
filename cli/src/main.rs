@@ -20,6 +20,13 @@ use crate::github::{GitHub, Remote};
 
 const SKILL: &str = include_str!("../../skills/nubes/SKILL.md");
 const VECTORS: &str = include_str!("../../crates/core/tests/vectors.json");
+/// GitHub ignores pre-filling parameters on the new token page: list the steps.
+const TOKEN_HELP: &str = "\
+Create a fine-grained token: https://github.com/settings/personal-access-tokens/new
+  a. give it a name (\"nubes\") and an expiration;
+  b. Repository access: \"Only select repositories\", then pick your nubes repository;
+  c. Permissions: \"Add permissions\", check \"Contents\", set it to \"Read and write\";
+  d. \"Generate token\", copy it and paste it below.";
 
 #[derive(Parser)]
 #[command(
@@ -137,8 +144,7 @@ fn run(cli: Cli) -> Result<()> {
                 std::io::stdin().read_to_string(&mut s)?;
                 s.trim().to_string()
             } else {
-                eprintln!("Create a fine-grained token with “Contents: Read and write” on your nubes repository:");
-                eprintln!("  https://github.com/settings/personal-access-tokens/new?name=nubes&description=nubes+sync&contents=write");
+                eprintln!("{TOKEN_HELP}");
                 rpassword::prompt_password("Token: ")?.trim().to_string()
             };
             if token.is_empty() {
@@ -173,8 +179,10 @@ fn run(cli: Cli) -> Result<()> {
             let (repo, prefix) = parse_target(&target)?;
             let gh = client(cli.api)?;
             let (default_branch, can_push) = gh.repo(&repo)?;
-            if !can_push {
-                bail!("the token cannot write to {repo}: give it “Contents: Read and write”");
+            if !can_push || !gh.can_write(&repo)? {
+                bail!(
+                    "the token can read {repo} but not write to it: on GitHub, edit the token and set Permissions → Contents to “Read and write”"
+                );
             }
             let branch = branch.unwrap_or(default_branch);
             let config = Config {

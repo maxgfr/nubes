@@ -155,6 +155,24 @@ export class GitHub {
     return repoInfo(await this.#json<Json>("GET", `/repos/${full}`));
   }
 
+  /**
+   * Whether the token can really write to the repository. `permissions.push`
+   * describes the account, not a fine-grained token, so this creates an
+   * empty blob: harmless (never referenced by a tree) and refused with 403
+   * when the token only has Contents: Read. An empty repository refuses the
+   * git data API (409): nothing can be checked there before the first commit.
+   */
+  async canWrite(full: string): Promise<boolean> {
+    try {
+      await this.createBlob(full, new Uint8Array());
+      return true;
+    } catch (err) {
+      if (err instanceof GitHubError && err.status === 409) return true;
+      if (err instanceof GitHubError && (err.status === 403 || err.status === 404)) return false;
+      throw err;
+    }
+  }
+
   /** The commit a branch points to, or null if the branch (or the whole repository) is empty. */
   async head(full: string, branch: string): Promise<string | null> {
     try {

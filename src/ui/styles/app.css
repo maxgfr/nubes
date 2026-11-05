@@ -280,6 +280,23 @@ input:focus-visible {
   gap: 6px;
 }
 
+.token-steps {
+  margin: 6px 0 0;
+  padding-left: 20px;
+  display: grid;
+  gap: 4px;
+  list-style: lower-alpha;
+  color: var(--muted);
+}
+
+.token-steps b {
+  color: var(--text);
+}
+
+.notice {
+  border-color: var(--warn);
+}
+
 .visually-hidden {
   position: absolute;
   width: 1px;

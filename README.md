@@ -55,9 +55,13 @@ instance) can clone it into Files when you need that.
 ## Setup
 
 1. Create a **private** repository, e.g. [`nubes-files`](https://github.com/new?name=nubes-files&visibility=private).
-2. Create a [fine-grained token](https://github.com/settings/personal-access-tokens/new?name=nubes&contents=write)
-   with access to **only that repository** and **Contents: Read and write**.
-3. Paste it in the web app, or run `nubes login`.
+2. Create a [fine-grained token](https://github.com/settings/personal-access-tokens/new).
+   GitHub's defaults give a token nubes cannot use, so on that page:
+   - **Repository access**: choose **Only select repositories**, then pick your repository;
+   - **Permissions**: click **Add permissions**, check **Contents**, set it to **Read and write**;
+   - **Generate token** and copy it.
+3. Paste it in the web app, or run `nubes login`. Picking the repository in
+   the web app, or `nubes init`, checks that the token can really write to it.
 
 The token is kept in your browser (local storage if you choose "stay signed
 in", the tab's session storage otherwise) and is only ever sent to

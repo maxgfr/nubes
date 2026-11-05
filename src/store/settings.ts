@@ -89,9 +89,11 @@ export function setDeviceName(name: string): void {
   storage("local")?.setItem(DEVICE_KEY, name.trim() || "web");
 }
 
-/** Pre-filled “new fine-grained token” page. */
-export const TOKEN_URL =
-  "https://github.com/settings/personal-access-tokens/new?name=nubes&description=nubes%20(files%20in%20a%20GitHub%20repository)&contents=write";
+/**
+ * “New fine-grained token” page. GitHub ignores pre-filling parameters on
+ * this page, so the onboarding spells out the steps instead.
+ */
+export const TOKEN_URL = "https://github.com/settings/personal-access-tokens/new";
 
 /** The user's fine-grained tokens (to change a token's repository access). */
 export const TOKENS_URL = "https://github.com/settings/personal-access-tokens";

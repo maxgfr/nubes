@@ -39,7 +39,12 @@ function folder(): string {
   return d;
 }
 
-async function nubes(cwd: string, args: string[], device = "laptop"): Promise<string> {
+async function nubes(
+  cwd: string,
+  args: string[],
+  device = "laptop",
+  token = "test-token",
+): Promise<string> {
   const p = Bun.spawn([BIN, ...args], {
     stdout: "pipe",
     stderr: "pipe",
@@ -48,7 +53,7 @@ async function nubes(cwd: string, args: string[], device = "laptop"): Promise<st
       PATH: process.env.PATH ?? "",
       HOME: cwd,
       NUBES_API_URL: api,
-      NUBES_TOKEN: "test-token",
+      NUBES_TOKEN: token,
       NUBES_DEVICE: device,
       NUBES_NO_GH: "1",
       NUBES_CREDENTIALS_FILE: join(cwd, ".creds"),
@@ -82,6 +87,19 @@ describe.skipIf(!has)("nubes CLI", () => {
     const d = folder();
     expect(await nubes(d, ["selftest"])).toContain("selftest ok");
     expect(await nubes(d, ["skill"])).toContain("name: nubes");
+  });
+
+  test("init refuses a token that can read the repository but not write to it", async () => {
+    fake.tokens.add("read-only");
+    fake.readOnly.add("read-only");
+    fake.push(repo, { "a.txt": "A" });
+    const d = folder();
+    await expect(nubes(d, ["init", repo], "laptop", "read-only")).rejects.toThrow(
+      /can read .* but not write/,
+    );
+    expect(existsSync(join(d, ".nubes/config.json"))).toBe(false);
+    await nubes(d, ["init", repo]);
+    expect(existsSync(join(d, ".nubes/config.json"))).toBe(true);
   });
 
   test("init + sync uploads a folder in one commit; a second device gets it", async () => {
