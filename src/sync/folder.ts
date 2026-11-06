@@ -1,7 +1,7 @@
 /**
  * Two-way sync of a local folder from the browser, with the File System
  * Access API (Chrome, Edge, Opera on desktop). Same engine and same rules as
- * `nubes sync`: plan with nubes-core, remote side in one commit, then the
+ * `nubes sync`: plan with nubes-core, remote side (one commit per repository), then the
  * local side, then store the new base (in IndexedDB, with the folder handle).
  *
  * Safari (macOS, iPadOS) and Firefox do not let a page keep write access to
@@ -18,7 +18,7 @@ import {
   type Snapshot,
 } from "../engine";
 import { RefMovedError, type TreeChange } from "../github/client";
-import type { Remote, RemoteState } from "../github/repo";
+import type { Pool, PoolState } from "../github/pool";
 import { idbDel, idbGet, idbSet } from "../store/idb";
 
 interface FileState {
@@ -66,13 +66,13 @@ export function canSyncFolder(): boolean {
   return typeof (globalThis as { showDirectoryPicker?: Picker }).showDirectoryPicker === "function";
 }
 
-const key = (r: Remote) => `folder:${r.target.full}:${r.target.branch}:${r.prefix}`;
+const key = (r: Pool) => `folder:${r.id}`;
 
-export async function linkedFolder(r: Remote): Promise<LinkedFolder | undefined> {
+export async function linkedFolder(r: Pool): Promise<LinkedFolder | undefined> {
   return idbGet<LinkedFolder>(key(r));
 }
 
-export async function linkFolder(r: Remote): Promise<LinkedFolder> {
+export async function linkFolder(r: Pool): Promise<LinkedFolder> {
   const pick = (globalThis as unknown as { showDirectoryPicker: Picker }).showDirectoryPicker;
   const handle = await pick({ mode: "readwrite", id: "nubes" });
   const linked: LinkedFolder = {
@@ -85,7 +85,7 @@ export async function linkFolder(r: Remote): Promise<LinkedFolder> {
   return linked;
 }
 
-export async function unlinkFolder(r: Remote): Promise<void> {
+export async function unlinkFolder(r: Pool): Promise<void> {
   await idbDel(key(r));
 }
 
@@ -172,7 +172,7 @@ export interface FolderSyncResult {
  * Throws if the folder cannot be written (call hasPermission first).
  */
 export async function syncFolder(
-  r: Remote,
+  r: Pool,
   l: LinkedFolder,
   device: string,
   progress: (text: string) => void = () => {},
@@ -181,7 +181,7 @@ export async function syncFolder(
   const root = l.handle as unknown as DirHandle;
   for (let attempt = 0; attempt < 5; attempt++) {
     progress("Reading the repository");
-    let rs: RemoteState = await r.state();
+    let rs: PoolState = await r.state();
     if (!rs.head || !rs.hasMeta) {
       await r.ensureMeta(rs);
       rs = await r.state();
@@ -228,7 +228,7 @@ export async function syncFolder(
           progress(`Uploading ${++n}/${toSend.length}`);
           const f = await readFile(root, a.path);
           if ((await blobShaOf(f)) !== sha) throw new Error(`${a.path} changed during the sync`);
-          await r.put(new Uint8Array(await f.arrayBuffer()), sha, rs);
+          await r.put(new Uint8Array(await f.arrayBuffer()), sha, rs, dest);
         }
         changes.push({ path: dest, sha, mode: rs.files.get(dest)?.mode ?? "100644" });
       } else if (a.op === "deleteRemote") {
@@ -236,7 +236,7 @@ export async function syncFolder(
       }
     }
     let head = rs.head;
-    if (changes.length > 0 && rs.head && rs.tree) {
+    if ((changes.length > 0 || rs.fixups?.length) && rs.head && rs.tree) {
       progress("Committing");
       try {
         head = await r.commit(changes, `nubes: sync from ${device}`, rs);

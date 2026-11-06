@@ -1,4 +1,4 @@
-import { expect, signIn, test } from "./fixtures";
+import { expect, signIn, test, useExisting } from "./fixtures";
 
 test("sign in, pick a repository, upload, browse, preview", async ({ page, gh }) => {
   await signIn(page);
@@ -102,6 +102,7 @@ test("the repository list can be searched, and the token changed", async ({ page
   await page.goto("/?nosw");
   await page.getByLabel("GitHub token").fill("test-token");
   await page.getByRole("button", { name: "Continue" }).click();
+  await useExisting(page);
   const search = page.getByRole("searchbox", { name: "Search repositories" });
   await search.fill("NOTES");
   await expect(page.locator(".repo-item")).toHaveCount(1);
@@ -141,6 +142,7 @@ test("a read-only token is stopped at the picker, not at the first upload", asyn
   await expect(page.getByText("Only select repositories")).toBeVisible();
   await page.getByLabel("GitHub token").fill("read-only");
   await page.getByRole("button", { name: "Continue" }).click();
+  await useExisting(page);
   await page.getByRole("button", { name: /octo\/files/ }).click();
   await expect(page.getByRole("alert")).toContainText("but not write to it");
   await expect(page.getByText(/files? ·/)).toHaveCount(0);
@@ -151,6 +153,7 @@ test("a token that sees only public repositories is told how to fix it", async (
   await page.goto("/?nosw");
   await page.getByLabel("GitHub token").fill("test-token");
   await page.getByRole("button", { name: "Continue" }).click();
+  await useExisting(page);
   await expect(page.getByRole("button", { name: /octo\/site/ })).toBeVisible();
   // octo/files is private: no warning.
   await expect(page.locator(".notice")).toHaveCount(0);
@@ -168,6 +171,7 @@ test("a token that sees only public repositories is told how to fix it", async (
     }),
   );
   await page.reload();
+  await useExisting(page);
   await expect(page.getByText("This token only sees public repositories.")).toBeVisible();
   await expect(page.locator(".notice")).toContainText("Read and write");
 });

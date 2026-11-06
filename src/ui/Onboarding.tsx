@@ -1,10 +1,18 @@
-/** Sign in with a fine-grained token, then pick the repository to use. */
+/** Sign in with a fine-grained token, then name the folder (or pick a repository). */
 import { useSignal } from "@preact/signals";
 import { useEffect } from "preact/hooks";
 import type { RepoInfo } from "../github/client";
 import { normalizePrefix } from "../github/repo";
-import { chooseRepo, createEncrypted, describeError, session, signIn, signOut } from "../state";
-import { NEW_REPO_URL, TOKEN_URL, TOKENS_URL } from "../store/settings";
+import {
+  chooseRepo,
+  createEncrypted,
+  describeError,
+  openPool,
+  session,
+  signIn,
+  signOut,
+} from "../state";
+import { isPoolName, TOKEN_URL, TOKENS_URL } from "../store/settings";
 import { IconCloud } from "./icons";
 
 export function SignIn() {
@@ -32,17 +40,11 @@ export function SignIn() {
         <h1>nubes</h1>
       </div>
       <p class="lede">
-        Your files in a GitHub repository you own. Drop them here from any device, sync a folder
-        from the terminal, and every version stays in the history. No server in between: this page
-        talks to GitHub directly.
+        Your files in private GitHub repositories you own. Drop them here from any device, sync a
+        folder from the terminal, and every version stays in the history. No server in between: this
+        page talks to GitHub directly.
       </p>
       <ol class="steps">
-        <li>
-          <a href={NEW_REPO_URL} target="_blank" rel="noopener noreferrer">
-            Create a private repository
-          </a>{" "}
-          (or use an existing one).
-        </li>
         <li>
           <a href={TOKEN_URL} target="_blank" rel="noopener noreferrer">
             Create a fine-grained token
@@ -98,12 +100,14 @@ export function TokenSteps() {
     <ol class="token-steps">
       <li>Give it a name (“nubes”) and an expiration.</li>
       <li>
-        Under <b>Repository access</b>, choose <b>Only select repositories</b> and pick your
-        repository.
+        Under <b>Repository access</b>, choose <b>All repositories</b>: nubes creates private
+        repositories for your files as they fill up. (To use one repository of yours instead, choose{" "}
+        <b>Only select repositories</b> and pick it.)
       </li>
       <li>
-        Under <b>Permissions</b>, click <b>Add permissions</b>, check <b>Contents</b>, then set it
-        to <b>Read and write</b>.
+        Under <b>Permissions</b>, click <b>Add permissions</b>, check <b>Contents</b> and set it to{" "}
+        <b>Read and write</b>. With All repositories, also check <b>Administration</b>, set to{" "}
+        <b>Read and write</b> (to create the repositories).
       </li>
       <li>
         <b>Generate token</b> and copy it.
@@ -113,6 +117,7 @@ export function TokenSteps() {
 }
 
 export function PickRepo() {
+  const name = useSignal("nubes");
   const repos = useSignal<RepoInfo[] | null>(null);
   const manual = useSignal("");
   const prefix = useSignal("");
@@ -137,6 +142,32 @@ export function PickRepo() {
       });
   }, [s]);
 
+  /** The passphrase to encrypt with, or null; throws if the two differ. */
+  const passphrase = (): string | null => {
+    if (!encrypt.value) return null;
+    if (pass.value.length < 10)
+      throw new Error(
+        "Choose a passphrase of at least 10 characters (several random words are best).",
+      );
+    if (pass.value !== pass2.value) throw new Error("The two passphrases differ.");
+    return pass.value;
+  };
+
+  const create = async () => {
+    const n = name.value.trim();
+    pending.value = true;
+    error.value = null;
+    try {
+      if (!isPoolName(n))
+        throw new Error("A name of letters, digits, “-”, “_” or “.”, such as “nubes” or “photos”.");
+      await openPool(n, passphrase());
+    } catch (err) {
+      error.value = describeError(err);
+    } finally {
+      pending.value = false;
+    }
+  };
+
   const pick = async (full: string) => {
     if (!s) return;
     pending.value = true;
@@ -153,15 +184,9 @@ export function PickRepo() {
         branch: info.defaultBranch,
         prefix: normalizePrefix(prefix.value),
       };
-      if (!encrypt.value) await chooseRepo(next);
-      else {
-        if (pass.value.length < 10)
-          throw new Error(
-            "Choose a passphrase of at least 10 characters (several random words are best).",
-          );
-        if (pass.value !== pass2.value) throw new Error("The two passphrases differ.");
-        await createEncrypted(next, pass.value);
-      }
+      const secret = passphrase();
+      if (secret === null) await chooseRepo(next);
+      else await createEncrypted(next, secret);
     } catch (err) {
       error.value = describeError(err);
     } finally {
@@ -171,32 +196,110 @@ export function PickRepo() {
 
   const shown = filterRepos(repos.value ?? [], query.value);
   const publicOnly = isPublicOnly(repos.value);
+  const n = name.value.trim();
+  const exists = !!repos.value?.some(
+    (r) => r.fullName.toLowerCase() === `${s?.login}/${n}-1`.toLowerCase(),
+  );
 
   return (
     <main class="onboarding">
       <div class="brand-hero">
         <IconCloud size={40} />
-        <h1>Choose a repository</h1>
+        <h1>Name your folder</h1>
       </div>
       <p class="lede">
-        Signed in as <b>{s?.login}</b>. Pick the repository that will hold your files. A private one
-        is best.
+        Signed in as <b>{s?.login}</b>. nubes keeps your files in private repositories of your
+        account, <code>{n || "name"}-1</code>, <code>{n || "name"}-2</code>…, and creates the next
+        one when a repository reaches 5 GB. You see one folder.
       </p>
-      {publicOnly && (
-        <div class="card token-help notice" role="status">
-          <p>
-            <b>This token only sees public repositories.</b> That is GitHub's default. To use a
-            private repository, open{" "}
-            <a href={TOKENS_URL} target="_blank" rel="noopener noreferrer">
-              your fine-grained tokens
-            </a>
-            , edit this one (or create a new one) and:
-          </p>
-          <TokenSteps />
-          <p>Then reload this page, or sign in with the new token.</p>
+      <form
+        class="card form"
+        onSubmit={(e) => {
+          e.preventDefault();
+          void create();
+        }}
+      >
+        <label for="pool-name">Name</label>
+        <div class="row">
+          <input
+            id="pool-name"
+            value={name.value}
+            spellcheck={false}
+            autocapitalize="off"
+            autocomplete="off"
+            onInput={(e) => {
+              name.value = e.currentTarget.value;
+            }}
+          />
+          <button class="btn primary" type="submit" disabled={pending.value || !n}>
+            {pending.value ? "Opening…" : exists ? "Open" : "Create"}
+          </button>
         </div>
-      )}
-      <div class="card">
+        <p class="fine">
+          {exists
+            ? `${n} already exists on your account: its files open here.`
+            : "Use the same name on every device to see the same files."}
+        </p>
+        <label class="check">
+          <input
+            type="checkbox"
+            checked={encrypt.value}
+            onChange={(e) => {
+              encrypt.value = e.currentTarget.checked;
+            }}
+          />
+          Encrypt the files end to end (a new, empty folder)
+        </label>
+        {encrypt.value && (
+          <>
+            <label for="new-pass">Passphrase (10 characters or more)</label>
+            <input
+              id="new-pass"
+              type="password"
+              autocomplete="new-password"
+              value={pass.value}
+              onInput={(e) => {
+                pass.value = e.currentTarget.value;
+              }}
+            />
+            <label for="new-pass2">The passphrase again</label>
+            <input
+              id="new-pass2"
+              type="password"
+              autocomplete="new-password"
+              value={pass2.value}
+              onInput={(e) => {
+                pass2.value = e.currentTarget.value;
+              }}
+            />
+            <p class="fine">
+              Every device asks for it once. Nobody can reset it: without it, the files cannot be
+              read back. GitHub sees the file names and sizes, not their contents.
+            </p>
+          </>
+        )}
+        {error.value && (
+          <p class="error" role="alert">
+            {error.value}
+          </p>
+        )}
+      </form>
+      <details class="card existing">
+        <summary>Use an existing repository instead</summary>
+        {publicOnly && (
+          <div class="token-help notice" role="status">
+            <p>
+              <b>This token only sees public repositories.</b> That is GitHub's default. To use a
+              private repository, open{" "}
+              <a href={TOKENS_URL} target="_blank" rel="noopener noreferrer">
+                your fine-grained tokens
+              </a>
+              , edit this one (or create a new one) and:
+            </p>
+            <TokenSteps />
+            <p>Then reload this page, or sign in with the new token.</p>
+          </div>
+        )}
         {repos.value === null ? (
           <p class="muted">Loading repositories…</p>
         ) : repos.value.length === 0 ? (
@@ -286,59 +389,25 @@ export function PickRepo() {
               prefix.value = e.currentTarget.value;
             }}
           />
-          <label class="check">
-            <input
-              type="checkbox"
-              checked={encrypt.value}
-              onChange={(e) => {
-                encrypt.value = e.currentTarget.checked;
-              }}
-            />
-            Encrypt the files end to end (a new, empty repository or folder)
-          </label>
-          {encrypt.value && (
-            <>
-              <label for="new-pass">Passphrase (10 characters or more)</label>
-              <input
-                id="new-pass"
-                type="password"
-                autocomplete="new-password"
-                value={pass.value}
-                onInput={(e) => {
-                  pass.value = e.currentTarget.value;
-                }}
-              />
-              <label for="new-pass2">The passphrase again</label>
-              <input
-                id="new-pass2"
-                type="password"
-                autocomplete="new-password"
-                value={pass2.value}
-                onInput={(e) => {
-                  pass2.value = e.currentTarget.value;
-                }}
-              />
-              <p class="fine">
-                Every device asks for it once. Nobody can reset it: without it, the files cannot be
-                read back. GitHub sees the file names and sizes, not their contents.
-              </p>
-            </>
-          )}
-        </form>
-        {error.value && (
-          <p class="error" role="alert">
-            {error.value}
+          <p class="fine">
+            One repository, without new ones created for you; the encryption choice above applies.
+            The token only sees the repositories it was given: change its “Repository access” on
+            GitHub (
+            <a href={TOKENS_URL} target="_blank" rel="noopener noreferrer">
+              your fine-grained tokens
+            </a>
+            ) if yours is missing.
           </p>
-        )}
-      </div>
+        </form>
+      </details>
       <div class="card token-help">
         <p>
-          <b>Your private repository is missing?</b> The token only sees the repositories it was
-          given. Change its “Repository access” on GitHub (
+          <b>“Cannot create the repository”?</b> The token needs <b>All repositories</b> and the{" "}
+          <b>Administration</b> permission (Read and write), on top of Contents. Edit it on GitHub (
           <a href={TOKENS_URL} target="_blank" rel="noopener noreferrer">
             your fine-grained tokens
           </a>
-          ), then reload this page, or sign in with another token.
+          ), or sign in with another token.
         </p>
         <button type="button" class="btn" onClick={() => void signOut()}>
           Use another token

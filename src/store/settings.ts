@@ -6,10 +6,29 @@
  */
 
 export interface Link {
-  /** `owner/name`. */
+  /** `owner/name`; for a pool, `owner/<pool name>` (its repositories are `<name>-1`, `<name>-2`…). */
   repo: string;
+  /** "" for a pool (each repository uses its default branch). */
   branch: string;
   prefix: string;
+  /** A folder spread over repositories nubes creates as they fill up. */
+  pool?: { owner: string; name: string; maxSize: number };
+}
+
+/** The link of the pool `name` of `owner`. */
+export function poolLink(owner: string, name: string, maxSize: number): Link {
+  return { repo: `${owner}/${name}`, branch: "", prefix: "", pool: { owner, name, maxSize } };
+}
+
+/** A pool name: becomes `<name>-1`… on GitHub. */
+export function isPoolName(name: string): boolean {
+  return /^[\w.-]{1,90}$/.test(name) && !name.startsWith(".");
+}
+
+/** How a link is shown: `owner/repo`, `owner/repo:folder` or the pool's name. */
+export function linkLabel(l: Link): string {
+  if (l.pool) return l.pool.name;
+  return l.prefix ? `${l.repo}:${l.prefix}` : l.repo;
 }
 
 const LINK_KEY = "nubes.link.v1";
@@ -27,6 +46,21 @@ function storage(kind: "local" | "session"): Storage | null {
 export function isLink(v: unknown): v is Link {
   if (!v || typeof v !== "object") return false;
   const o = v as Record<string, unknown>;
+  if (o.pool !== undefined) {
+    const p = o.pool as Record<string, unknown> | null;
+    return (
+      !!p &&
+      typeof p.owner === "string" &&
+      /^[\w.-]+$/.test(p.owner) &&
+      typeof p.name === "string" &&
+      isPoolName(p.name) &&
+      typeof p.maxSize === "number" &&
+      p.maxSize > 0 &&
+      o.repo === `${p.owner}/${p.name}` &&
+      o.branch === "" &&
+      o.prefix === ""
+    );
+  }
   return (
     typeof o.repo === "string" &&
     /^[\w.-]+\/[\w.-]+$/.test(o.repo) &&

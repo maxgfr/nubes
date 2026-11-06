@@ -1,8 +1,9 @@
 /**
- * App state (signals) and the actions that change the repository. Every
- * change is one commit, built on the branch as it is at that moment and
- * retried if another device committed meanwhile. The branch is polled while
- * the page is visible, so what other devices push shows up on its own.
+ * App state (signals) and the actions that change the folder. Every change
+ * is one commit (one per repository of a pool that changes), built on the
+ * branch as it is at that moment and retried if another device committed
+ * meanwhile. The branches are polled while the page is visible, so what
+ * other devices push shows up on its own.
  */
 import { batch, computed, signal } from "@preact/signals";
 import type { Cipher } from "./crypto";
@@ -18,7 +19,8 @@ import {
   type Snapshot,
 } from "./engine";
 import { GitHub, GitHubError, type TreeChange } from "./github/client";
-import { Remote, type RemoteState } from "./github/repo";
+import { DEFAULT_MAX_SIZE, Pool } from "./github/pool";
+import type { RemoteState } from "./github/repo";
 import {
   addPending,
   clearPinCache,
@@ -41,6 +43,7 @@ import {
   loadKey,
   loadLink,
   loadToken,
+  poolLink,
   saveKey,
   saveLink,
   saveToken,
@@ -107,11 +110,18 @@ const cipherKey = (l: Link) => `${l.repo}#${l.branch}#${l.prefix}`;
 /** Bumped when a folder is unlocked or locked (the key is not a signal). */
 const keyVersion = signal(0);
 
+/** The remote side of link `l`: its repository, or its pool of repositories. */
+export function poolFor(gh: GitHub, l: Link): Pool {
+  return l.pool
+    ? new Pool(gh, l.pool)
+    : new Pool(gh, null, { full: l.repo, branch: l.branch, prefix: l.prefix });
+}
+
 export const remote = computed(() => {
   const s = session.value;
   const l = link.value;
   if (!s || !l) return null;
-  const r = new Remote(s.gh, { full: l.repo, branch: l.branch, prefix: l.prefix });
+  const r = poolFor(s.gh, l);
   r.cipher = ciphers.get(cipherKey(l)) ?? null;
   return r;
 });
@@ -167,10 +177,34 @@ export function lockFolder(): void {
 export async function createEncrypted(l: Link, passphrase: string): Promise<void> {
   const s = session.value;
   if (!s) throw new Error("not signed in");
-  const r = new Remote(s.gh, { full: l.repo, branch: l.branch, prefix: l.prefix });
-  const c = await r.initEncryption(passphrase);
+  const c = await poolFor(s.gh, l).initEncryption(passphrase);
   ciphers.set(cipherKey(l), c);
   saveKey(l, c.secret, loadToken()?.remember ?? false);
+  await chooseRepo(l);
+}
+
+/**
+ * Opens the folder `name` of the signed-in account (its repositories
+ * `<name>-1`, `<name>-2`…), creating its first repository if it is new;
+ * encrypted with `passphrase` if given (a new folder only).
+ */
+export async function openPool(name: string, passphrase: string | null): Promise<void> {
+  const s = session.value;
+  if (!s) throw new Error("not signed in");
+  const login = s.login || (await s.gh.user());
+  let l = poolLink(login, name, DEFAULT_MAX_SIZE);
+  const probe = poolFor(s.gh, l);
+  const st = await probe.state();
+  const first = st.members?.[0];
+  // Joining: the limit chosen when the folder was created.
+  const max = first && probe.members[0] ? (await probe.members[0].readMeta(first))?.maxSize : null;
+  if (typeof max === "number" && max > 0) l = poolLink(login, name, max);
+  if (passphrase !== null) {
+    if (st.encrypted) throw new Error(`${name} is already encrypted: open it without encryption.`);
+    await createEncrypted(l, passphrase);
+    return;
+  }
+  await poolFor(s.gh, l).ensureMeta();
   await chooseRepo(l);
 }
 
@@ -188,6 +222,8 @@ export function dismissToast(id: number): void {
 export function describeError(err: unknown): string {
   if (err instanceof GitHubError) {
     if (err.status === 401) return "GitHub refused the token (expired or revoked). Sign in again.";
+    if (err.status === 403 && /cannot create the repository/.test(err.message))
+      return `GitHub refused: ${err.message}.`;
     if (err.status === 403)
       return `GitHub refused: ${err.message}. The token needs “Contents: Read and write” on this repository.`;
     if (err.status === 404) return "Repository not found, or the token cannot access it.";
@@ -298,7 +334,7 @@ export function refresh(force = false): Promise<void> {
       }
       const current = remoteState.value;
       if (!force && current) {
-        const head = await r.gh.head(r.target.full, r.target.branch);
+        const head = await r.head();
         if (head === current.head) {
           lastChecked.value = Date.now();
           online.value = true;
@@ -548,7 +584,7 @@ function uploadNow(picked: { path: string; file: Blob }[], dir: string): Promise
           }
           if (!r.has(sha, s)) {
             setUpload(it.id, { status: "uploading" });
-            await r.put(new Uint8Array(await it.file.arrayBuffer()), sha, s);
+            await r.put(new Uint8Array(await it.file.arrayBuffer()), sha, s, it.path);
           }
           ready.push({ id: it.id, path: it.path, sha, mode: existing?.mode ?? "100644" });
           setUpload(it.id, { status: "ready" });
@@ -767,7 +803,7 @@ export function saveText(
         if (a.op === "conflict") target = a.renamedTo;
         else if (a.op === "upload") target = path;
         else throw new Error(`${basename(path)} cannot be saved here`);
-        await r.put(data, sha, s);
+        await r.put(data, sha, s, target);
         return [{ path: target, sha, mode: s.files.get(path)?.mode ?? "100644" }];
       },
       message({ [baseSha ? "updated" : "added"]: 1 }),
@@ -850,7 +886,11 @@ export function downloadZip(dir: string): Promise<void> {
   const l = link.value;
   if (!s || !l) return Promise.resolve();
   const paths = dir ? filesUnder(s.files, dir) : [...s.files.keys()];
-  return zipFiles(paths, dir, `${dir ? basename(dir) : l.repo.split("/")[1]}.zip`);
+  return zipFiles(
+    paths,
+    dir,
+    `${dir ? basename(dir) : (l.pool?.name ?? l.repo.split("/")[1])}.zip`,
+  );
 }
 
 /** Downloads some files and folders of `dir` as one zip. */

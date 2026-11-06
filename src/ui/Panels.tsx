@@ -2,6 +2,7 @@
 import { useSignal } from "@preact/signals";
 import { useEffect } from "preact/hooks";
 import type { CommitInfo } from "../github/client";
+import type { MemberSize } from "../github/pool";
 import {
   chooseRepo,
   clearFinishedUploads,
@@ -138,8 +139,7 @@ export function History(props: { path: string; onClose: () => void }) {
   const current = remoteState.value?.files.get(props.path)?.sha;
   useEffect(() => {
     if (!r) return;
-    r.gh
-      .history(r.target.full, r.target.branch, r.storedPath(props.path))
+    r.history(props.path)
       .then((c) => {
         commits.value = c;
       })
@@ -312,21 +312,23 @@ export function Confirm(props: {
 export const SIZE_SOFT = 1024 ** 3;
 export const SIZE_HARD = 5 * 1024 ** 3;
 
-/** The repository's size against GitHub's recommended limits. */
+/** The repository's size against GitHub's recommended limits; for a pool, each repository against its limit. */
 function Storage() {
-  const size = useSignal<number | null>(null);
+  const sizes = useSignal<MemberSize[] | null>(null);
   const r = remote.value;
+  const pool = link.value?.pool;
   useEffect(() => {
     if (!r) return;
-    r.gh.repo(r.target.full).then(
-      (info) => {
-        size.value = info.size;
+    r.sizes().then(
+      (s) => {
+        sizes.value = s;
       },
       () => {},
     );
   }, [r]);
-  if (size.value === null) return null;
-  const n = size.value;
+  if (sizes.value === null || sizes.value.length === 0) return null;
+  if (pool) return <PoolStorage sizes={sizes.value} max={pool.maxSize} />;
+  const n = (sizes.value[0] as MemberSize).size;
   const level = n >= SIZE_HARD ? "over" : n >= SIZE_SOFT ? "warn" : "ok";
   return (
     <div class={`storage storage-${level}`}>
@@ -353,6 +355,48 @@ function Storage() {
   );
 }
 
+/** A pool: one gauge per repository. A full one is expected, new files go to the next. */
+function PoolStorage(props: { sizes: MemberSize[]; max: number }) {
+  const total = props.sizes.reduce((n, m) => n + m.size, 0);
+  const count = props.sizes.length;
+  return (
+    <div class="storage">
+      <div class="row between">
+        <b>Storage</b>
+        <span>
+          {humanSize(total)}{" "}
+          <span class="muted">
+            in {count} {count === 1 ? "repository" : "repositories"}
+          </span>
+        </span>
+      </div>
+      <ul class="storage-members">
+        {props.sizes.map((m) => (
+          <li key={m.repo} class="storage-member">
+            <div class="row between small">
+              <a href={`https://github.com/${m.repo}`} target="_blank" rel="noopener noreferrer">
+                {m.repo.split("/")[1]}
+              </a>
+              <span>
+                {humanSize(m.size)} <span class="muted">of {humanSize(props.max)}</span>
+                {m.size >= props.max && <span class="muted"> · full</span>}
+              </span>
+            </div>
+            <div class="gauge" aria-hidden="true">
+              <span style={{ width: `${Math.min(100, (m.size / props.max) * 100)}%` }} />
+            </div>
+          </li>
+        ))}
+      </ul>
+      <p class="fine">
+        When a repository reaches {humanSize(props.max)}, new files go to the next one, created
+        automatically (private). Edits stay in the repository that holds the file. Every version is
+        kept, so deleted files still count; GitHub updates these figures a while after changes.
+      </p>
+    </div>
+  );
+}
+
 export function Settings(props: { onClose: () => void }) {
   const device = useSignal(deviceName());
   const l = link.value;
@@ -361,7 +405,16 @@ export function Settings(props: { onClose: () => void }) {
       <div class="form">
         <p>
           Signed in as <b>{session.value?.login}</b>
-          {l && (
+          {l?.pool && (
+            <>
+              {" "}
+              · <b>{l.pool.name}</b>, in the private repositories{" "}
+              <code>
+                {l.pool.owner}/{l.pool.name}-1, -2…
+              </code>
+            </>
+          )}
+          {l && !l.pool && (
             <>
               {" "}
               · repository{" "}
@@ -437,8 +490,8 @@ export function Settings(props: { onClose: () => void }) {
           </li>
           <li>
             <b>Mac, Linux:</b> <code>brew install maxgfr/tap/nubes</code>, then{" "}
-            <code>nubes init {l?.repo ?? "owner/repo"}</code> and <code>nubes service install</code>{" "}
-            in the folder: it stays in sync in the background.
+            <code>nubes init {l?.pool?.name ?? l?.repo ?? "owner/repo"}</code> and{" "}
+            <code>nubes service install</code> in the folder: it stays in sync in the background.
           </li>
           <li>
             <b>Without a network:</b> files you add wait on this device and are sent when it comes

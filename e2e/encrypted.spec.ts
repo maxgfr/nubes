@@ -1,4 +1,4 @@
-import { expect, test } from "./fixtures";
+import { expect, test, useExisting } from "./fixtures";
 
 const PASS = "correct horse battery staple";
 const upload = "input[type=file]:not([webkitdirectory]):not([capture])";
@@ -14,6 +14,7 @@ test("an encrypted folder: GitHub stores ciphertext; another session needs the p
   await page.getByLabel(/Encrypt the files end to end/).check();
   await page.getByLabel(/^Passphrase/).fill(PASS);
   await page.getByLabel("The passphrase again").fill("not the same one");
+  await useExisting(page);
   await page.getByRole("button", { name: /octo\/files/ }).click();
   await expect(page.getByRole("alert")).toContainText("differ");
   await page.getByLabel("The passphrase again").fill(PASS);

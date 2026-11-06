@@ -4,8 +4,8 @@
  * cached in IndexedDB: the 100 latest commits cost 100 requests once, then
  * one per new commit.
  */
-import type { CommitFiles, CommitInfo, GitHub } from "./github/client";
-import type { Remote } from "./github/repo";
+import type { CommitFiles, CommitInfo } from "./github/client";
+import type { Pool } from "./github/pool";
 import { idbGet, idbSet } from "./store/idb";
 
 /** How far back the panels look. */
@@ -13,26 +13,26 @@ export const RECENT = 100;
 
 export interface RecentCommit extends CommitInfo, CommitFiles {}
 
-async function filesOf(gh: GitHub, full: string, sha: string): Promise<CommitFiles> {
-  const key = `commit:${full}:${sha}`;
+/** What commit `c` changed (cached: a commit never changes). */
+export async function filesOf(r: Pool, c: CommitInfo): Promise<CommitFiles> {
+  const key = `commit:${c.repo ?? r.id}:${c.sha}`;
   const hit = await idbGet<CommitFiles>(key).catch(() => undefined);
   if (hit) return hit;
-  const got = await gh.commitFiles(full, sha);
+  const got = await r.commitFiles(c);
   await idbSet(key, got).catch(() => undefined);
   return got;
 }
 
-/** The latest commits of the branch with the files each one changed, newest first. */
-export async function recentCommits(r: Remote, limit = RECENT): Promise<RecentCommit[]> {
-  const { full, branch } = r.target;
-  const list = await r.gh.history(full, branch, r.prefix, 1, Math.min(limit, 100));
+/** The latest commits (of every repository of the folder) with the files each one changed, newest first. */
+export async function recentCommits(r: Pool, limit = RECENT): Promise<RecentCommit[]> {
+  const list = await r.history("", Math.min(limit, 100));
   const out: RecentCommit[] = new Array(list.length);
   let next = 0;
   const worker = async () => {
     while (next < list.length) {
       const i = next++;
       const c = list[i] as CommitInfo;
-      out[i] = { ...c, ...(await filesOf(r.gh, full, c.sha)) };
+      out[i] = { ...c, ...(await filesOf(r, c)) };
     }
   };
   await Promise.all([worker(), worker(), worker(), worker(), worker(), worker()]);

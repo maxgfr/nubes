@@ -18,6 +18,8 @@ export interface RepoTarget {
   branch: string;
   /** Sub-folder of the repository, without leading or trailing slash ("" for the root). */
   prefix: string;
+  /** A member of a pool (FORMAT.md version 3): written into its meta.json. */
+  pool?: { name: string; index: number; maxSize: number };
 }
 
 export interface RemoteFile {
@@ -50,6 +52,8 @@ export interface RemoteState {
   blobs: Set<string>;
   /** Whether `.nubes/meta.json` exists at the repository root. */
   hasMeta: boolean;
+  /** Its blob id. */
+  metaBlob?: string | null;
   /** Whether the folder is encrypted (it has `.nubes/key.age`). */
   encrypted?: boolean;
   keyBlob?: string | null;
@@ -67,6 +71,8 @@ export const KEY_FILE = ".nubes/key.age";
 export const MANIFEST_FILE = ".nubes/manifest.json";
 /** FORMAT.md version of an encrypted folder. */
 const AGE_FORMAT_VERSION = 2;
+/** FORMAT.md version of a member of a pool (plain or encrypted). */
+export const POOL_FORMAT_VERSION = 3;
 
 export function metaJson(mode: "plain" = "plain"): string {
   return `${JSON.stringify(
@@ -160,8 +166,12 @@ export class Remote {
     const stored = new Map<string, string>();
     const foreign: string[] = [];
     let hasMeta = false;
+    let metaBlob: string | null = null;
     for (const e of entries) {
-      if (e.path === META_PATH) hasMeta = true;
+      if (e.path === META_PATH) {
+        hasMeta = true;
+        metaBlob = e.sha;
+      }
       if (!encrypted) blobs.add(e.sha);
       // Symlinks (120000) are not files nubes can sync.
       if (e.mode === "120000") continue;
@@ -185,7 +195,53 @@ export class Remote {
       files.set(path, { sha: m.plainSha, size: m.size, mode: e.mode });
     }
     this.encrypted = encrypted;
-    return { head, tree, files, blobs, hasMeta, encrypted, keyBlob, manifest, stored, foreign };
+    return {
+      head,
+      tree,
+      files,
+      blobs,
+      hasMeta,
+      metaBlob,
+      encrypted,
+      keyBlob,
+      manifest,
+      stored,
+      foreign,
+    };
+  }
+
+  /** The branch's commit (one request). */
+  head(): Promise<string | null> {
+    return this.gh.head(this.target.full, this.target.branch);
+  }
+
+  /** FORMAT.md's `.nubes/meta.json` for this folder. */
+  metaText(recipient?: string): string {
+    const m: Record<string, unknown> = recipient
+      ? { format: "nubes", version: AGE_FORMAT_VERSION, mode: "age", recipient }
+      : { format: "nubes", version: 1, mode: "plain" };
+    const pool = this.target.pool;
+    if (pool)
+      Object.assign(m, {
+        version: POOL_FORMAT_VERSION,
+        pool: pool.name,
+        index: pool.index,
+        maxSize: pool.maxSize,
+      });
+    m.createdAt = new Date().toISOString();
+    return `${JSON.stringify(m, null, 2)}\n`;
+  }
+
+  /** The parsed `.nubes/meta.json`, if any. */
+  async readMeta(state: RemoteState): Promise<Record<string, unknown> | null> {
+    if (!state.metaBlob) return null;
+    try {
+      return JSON.parse(
+        new TextDecoder().decode(await this.gh.blob(this.target.full, state.metaBlob)),
+      );
+    } catch {
+      return null;
+    }
   }
 
   /** Writes `.nubes/meta.json` if missing; creates the first commit of an empty repository. */
@@ -196,7 +252,7 @@ export class Remote {
       this.target.full,
       this.target.branch,
       META_PATH,
-      enc.encode(metaJson()),
+      enc.encode(this.metaText()),
       "nubes: initialize",
     );
   }
@@ -223,28 +279,44 @@ export class Remote {
         `This folder already has ${state.files.size} plain file${state.files.size === 1 ? "" : "s"}: encryption is for a new folder (a new repository, or a new folder inside one).`,
       );
     const { cipher, recipient } = await newCipher();
-    const meta = `${JSON.stringify(
-      {
-        format: "nubes",
-        version: AGE_FORMAT_VERSION,
-        mode: "age",
-        recipient,
-        createdAt: new Date().toISOString(),
-      },
-      null,
-      2,
-    )}\n`;
+    await this.#seal(state, await lockKey(cipher, passphrase), recipient);
+    this.cipher = cipher;
+    return cipher;
+  }
+
+  /**
+   * Makes a new, empty member of an encrypted pool encrypted with the pool's
+   * key: the same `key.age` (locked by the same passphrase).
+   */
+  async adoptKey(keyFile: Uint8Array, cipher: Cipher): Promise<void> {
+    let state = await this.state();
+    if (!state.head || !state.hasMeta) {
+      await this.ensureMeta(state);
+      state = await this.state();
+    }
+    if (!state.encrypted) {
+      if (state.files.size > 0)
+        throw new Error(`${this.target.full} has plain files: it cannot join an encrypted folder.`);
+      await this.#seal(state, keyFile, cipher.recipient);
+    }
+    this.encrypted = true;
+    this.cipher = cipher;
+  }
+
+  /** Commits the key file and the age meta.json. */
+  async #seal(state: RemoteState, keyFile: Uint8Array, recipient: string): Promise<void> {
     const { full } = this.target;
     await this.commit(
       [
-        { path: KEY_FILE, sha: await this.gh.createBlob(full, await lockKey(cipher, passphrase)) },
-        { path: META_PATH, sha: await this.gh.createBlob(full, enc.encode(meta)) },
+        { path: KEY_FILE, sha: await this.gh.createBlob(full, keyFile) },
+        {
+          path: META_PATH,
+          sha: await this.gh.createBlob(full, enc.encode(this.metaText(recipient))),
+        },
       ],
       "nubes: encrypt this folder",
       state,
     );
-    this.cipher = cipher;
-    return cipher;
   }
 
   #cipher(): Cipher {

@@ -46,6 +46,8 @@ export interface CommitInfo {
   message: string;
   date: string;
   author: string;
+  /** The repository it belongs to (`owner/name`), when a folder spans several. */
+  repo?: string;
 }
 
 export interface RepoInfo {
@@ -170,6 +172,46 @@ export class GitHub {
 
   async repo(full: string): Promise<RepoInfo> {
     return repoInfo(await this.#json<Json>("GET", `/repos/${full}`));
+  }
+
+  /** The repository, or null if it does not exist (or the token cannot see it). */
+  async repoInfo(full: string): Promise<RepoInfo | null> {
+    try {
+      return await this.repo(full);
+    } catch (err) {
+      if (err instanceof GitHubError && err.status === 404) return null;
+      throw err;
+    }
+  }
+
+  /**
+   * Creates a private repository on the token's account; null if one of that
+   * name exists already (another device may just have created it). Needs a
+   * token with access to all repositories and Administration: Read and write.
+   */
+  async createRepo(name: string, description: string): Promise<RepoInfo | null> {
+    try {
+      return repoInfo(
+        await this.#json<Json>("POST", "/user/repos", {
+          name,
+          description,
+          private: true,
+          auto_init: false,
+          has_issues: false,
+          has_projects: false,
+          has_wiki: false,
+        }),
+      );
+    } catch (err) {
+      if (err instanceof GitHubError && err.status === 422) return null;
+      if (err instanceof GitHubError && (err.status === 403 || err.status === 404))
+        throw new GitHubError(
+          err.status,
+          `cannot create the repository ${name}: the token needs access to “All repositories” and the “Administration” permission set to “Read and write”`,
+          err.path,
+        );
+      throw err;
+    }
   }
 
   /**

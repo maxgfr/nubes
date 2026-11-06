@@ -19,6 +19,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { gitBlobSha, loadEngineSync } from "../src/engine";
 import { GitHub } from "../src/github/client";
+import { Pool } from "../src/github/pool";
 import { Remote } from "../src/github/repo";
 import { createFakeGitHub, serveFakeGitHub } from "./fake-github";
 
@@ -459,6 +460,32 @@ describe.skipIf(!has)("nubes CLI with a pool of repositories", () => {
     expect(read(b, "b.txt")).toBe("secret two");
     expect(await nubes(b, ["lock"], "desk")).toContain("key removed");
     await expect(nubes(b, ["sync"], "desk")).rejects.toThrow(/encrypted/);
+  });
+
+  test("the web app reads and writes the same pool as the CLI", async () => {
+    const a = folder();
+    write(a, "cli.txt", "from the terminal");
+    await nubes(a, ["init", name, "--max-size", "1G"]);
+    await nubes(a, ["sync"]);
+    fake.setSize(member(1), 2 * 1024 ** 3);
+
+    const gh = new GitHub("test-token", { api });
+    const web = new Pool(gh, { owner: "octo", name, maxSize: 1024 ** 3 });
+    const s = await web.state();
+    expect([...s.files.keys()]).toEqual(["cli.txt"]);
+    await web.apply(async (now) => {
+      const data = new TextEncoder().encode("from the browser");
+      const sha = gitBlobSha(data);
+      await web.put(data, sha, now, "web.txt");
+      return [{ path: "web.txt", sha }];
+    }, "nubes: 1 added (from ipad)");
+    expect(fake.files(member(2))["web.txt"]).toBe("from the browser");
+
+    await nubes(a, ["sync"]);
+    expect(read(a, "web.txt")).toBe("from the browser");
+    write(a, "web.txt", "edited in the terminal");
+    await nubes(a, ["sync"]);
+    expect(fake.files(member(2))["web.txt"]).toBe("edited in the terminal");
   });
 
   test("a token that cannot create repositories, and a name already taken, are refused", async () => {

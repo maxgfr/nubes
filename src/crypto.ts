@@ -9,6 +9,8 @@
 export interface Cipher {
   /** The `AGE-SECRET-KEY-1…` line this device keeps. */
   readonly secret: string;
+  /** Its `age1…` recipient (what meta.json records). */
+  readonly recipient: string;
   encrypt(data: Uint8Array): Promise<Uint8Array>;
   decrypt(data: Uint8Array): Promise<Uint8Array>;
 }
@@ -28,6 +30,7 @@ export async function cipherFor(secret: string): Promise<Cipher> {
   enc.addRecipient(recipient);
   return {
     secret: s,
+    recipient,
     encrypt: (data) => enc.encrypt(data),
     decrypt: async (data) => {
       try {

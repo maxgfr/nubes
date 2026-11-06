@@ -136,11 +136,7 @@ export interface Placement {
 }
 
 /** The union of a pool's members, duplicate paths resolved (crates/core/src/pool.rs). */
-export function poolMerge(input: {
-  members: PoolMember[];
-  device?: string;
-  stamp?: string;
-}): View {
+export function poolMerge(input: { members: PoolMember[]; device?: string; stamp?: string }): View {
   assertLoaded();
   return JSON.parse(wasm.poolMerge(JSON.stringify(input))) as View;
 }

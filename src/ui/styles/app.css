@@ -297,6 +297,20 @@ input:focus-visible {
   border-color: var(--warn);
 }
 
+.existing {
+  display: grid;
+  gap: 16px;
+}
+
+.existing summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.existing:not([open]) {
+  padding-block: 14px;
+}
+
 .visually-hidden {
   position: absolute;
   width: 1px;
@@ -1248,6 +1262,19 @@ textarea:focus-visible {
 
 .row.between {
   justify-content: space-between;
+}
+
+.storage-members {
+  display: grid;
+  gap: 10px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.storage-member {
+  display: grid;
+  gap: 4px;
 }
 
 .gauge {

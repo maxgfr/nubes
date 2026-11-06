@@ -39,8 +39,7 @@ export function Activity(props: { onClose: () => void }) {
   const r = remote.value;
   useEffect(() => {
     if (!r) return;
-    r.gh
-      .history(r.target.full, r.target.branch, r.prefix, 1, 50)
+    r.history("", 50)
       .then((c) => {
         commits.value = c;
       })
@@ -57,7 +56,7 @@ export function Activity(props: { onClose: () => void }) {
     open.value = open.value === c.sha ? null : c.sha;
     if (!r || files.value[c.sha]) return;
     try {
-      const f = await r.gh.commitFiles(r.target.full, c.sha);
+      const f = await r.commitFiles(c);
       files.value = { ...files.value, [c.sha]: f.files };
     } catch (err) {
       error.value = describeError(err);

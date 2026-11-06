@@ -28,11 +28,17 @@ export const test = base.extend<{ gh: FakeGitHub }>({
 
 export { expect } from "@playwright/test";
 
+/** Opens “Use an existing repository instead” on the onboarding page. */
+export async function useExisting(page: Page): Promise<void> {
+  await page.getByText("Use an existing repository instead").click();
+}
+
 /** Signs in and picks octo/files. */
 export async function signIn(page: Page): Promise<void> {
   await page.goto("/?nosw");
   await page.getByLabel("GitHub token").fill("test-token");
   await page.getByRole("button", { name: "Continue" }).click();
+  await useExisting(page);
   await page.getByRole("button", { name: /octo\/files/ }).click();
   await page
     .getByText(/Nothing here yet|files? ·/)

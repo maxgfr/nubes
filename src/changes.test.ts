@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { createFakeGitHub } from "../test/fake-github";
 import { changeDates, deletedFiles, deviceOf, recentCommits, relative } from "./changes";
 import { GitHub } from "./github/client";
-import { Remote } from "./github/repo";
+import { Pool } from "./github/pool";
 import { capturedName } from "./ui/drop";
 
 function setup(prefix = "") {
@@ -13,7 +13,7 @@ function setup(prefix = "") {
     fetch: (input, init) => fake.handle(new Request(input, init)),
     sleep: async () => {},
   });
-  return { fake, remote: new Remote(gh, { full: "octo/files", branch: "main", prefix }) };
+  return { fake, remote: new Pool(gh, null, { full: "octo/files", branch: "main", prefix }) };
 }
 
 test("deleted files are found in recent commits, unless they are back", async () => {
