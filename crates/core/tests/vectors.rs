@@ -1,7 +1,7 @@
 //! Replays `vectors.json`, which `bun test` also replays through the
 //! WebAssembly build: both clients must agree on every case.
 
-use nubes_core::{git_blob_sha, plan, Matcher, PlanInput};
+use nubes_core::{git_blob_sha, merge, place, plan, Matcher, MergeInput, PlaceInput, PlanInput};
 use serde_json::Value;
 
 fn vectors() -> Value {
@@ -49,6 +49,29 @@ fn plan_vectors() {
             serde_json::to_value(&out.next_base).unwrap(),
             v["nextBase"],
             "{name}: nextBase"
+        );
+    }
+}
+
+#[test]
+fn pool_vectors() {
+    let v = vectors();
+    for c in v["pools"]["merge"].as_array().unwrap() {
+        let name = c["name"].as_str().unwrap();
+        let input: MergeInput = serde_json::from_value(c["input"].clone()).unwrap();
+        assert_eq!(
+            serde_json::to_value(merge(&input)).unwrap(),
+            c["output"],
+            "merge: {name}"
+        );
+    }
+    for c in v["pools"]["place"].as_array().unwrap() {
+        let name = c["name"].as_str().unwrap();
+        let input: PlaceInput = serde_json::from_value(c["input"].clone()).unwrap();
+        assert_eq!(
+            serde_json::to_value(place(&input)).unwrap(),
+            c["output"],
+            "place: {name}"
         );
     }
 }

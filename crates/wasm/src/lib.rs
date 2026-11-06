@@ -47,6 +47,22 @@ pub fn plan(input: &str) -> Result<String, JsError> {
     serde_json::to_string(&out).map_err(|e| JsError::new(&e.to_string()))
 }
 
+/// The union of a pool's members: `input` is a `MergeInput` as JSON, the result a `View`.
+#[wasm_bindgen(js_name = poolMerge)]
+pub fn pool_merge(input: &str) -> Result<String, JsError> {
+    let input: nubes_core::MergeInput =
+        serde_json::from_str(input).map_err(|e| JsError::new(&format!("merge input: {e}")))?;
+    serde_json::to_string(&nubes_core::merge(&input)).map_err(|e| JsError::new(&e.to_string()))
+}
+
+/// Which member each change goes to: `input` is a `PlaceInput` as JSON, the result a `Placement`.
+#[wasm_bindgen(js_name = poolPlace)]
+pub fn pool_place(input: &str) -> Result<String, JsError> {
+    let input: nubes_core::PlaceInput =
+        serde_json::from_str(input).map_err(|e| JsError::new(&format!("place input: {e}")))?;
+    serde_json::to_string(&nubes_core::place(&input)).map_err(|e| JsError::new(&e.to_string()))
+}
+
 /// `.nubesignore` rules (plus the built-in defaults).
 #[wasm_bindgen]
 pub struct IgnoreMatcher(nubes_core::Matcher);

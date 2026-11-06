@@ -107,6 +107,56 @@ export function plan(input: PlanInput): Plan {
   return JSON.parse(wasm.plan(JSON.stringify(input))) as Plan;
 }
 
+/** A remote change in a pool: `sha: null` deletes `path`. */
+export interface PoolChange {
+  path: string;
+  sha: string | null;
+  size: number;
+}
+
+export interface PoolMember {
+  index: number;
+  used?: number;
+  files?: Snapshot;
+}
+
+export interface Fixup extends PoolChange {
+  member: number;
+}
+
+export interface View {
+  files: Snapshot;
+  owner: Record<string, number>;
+  fixups: Fixup[];
+}
+
+export interface Placement {
+  members: { index: number; changes: PoolChange[] }[];
+  create: number;
+}
+
+/** The union of a pool's members, duplicate paths resolved (crates/core/src/pool.rs). */
+export function poolMerge(input: {
+  members: PoolMember[];
+  device?: string;
+  stamp?: string;
+}): View {
+  assertLoaded();
+  return JSON.parse(wasm.poolMerge(JSON.stringify(input))) as View;
+}
+
+/** Which member each change goes to, and how many members to create. */
+export function poolPlace(input: {
+  members: PoolMember[];
+  owner?: Record<string, number>;
+  fixups?: Fixup[];
+  limit?: number | null;
+  changes: PoolChange[];
+}): Placement {
+  assertLoaded();
+  return JSON.parse(wasm.poolPlace(JSON.stringify(input))) as Placement;
+}
+
 export function isSafePath(path: string): boolean {
   assertLoaded();
   return wasm.isSafePath(path);

@@ -10,11 +10,16 @@ mod glob;
 pub mod ignore;
 pub mod path;
 pub mod plan;
+pub mod pool;
 
 pub use blob::{git_blob_sha, BlobHasher};
 pub use ignore::Matcher;
 pub use path::{conflict_name, is_safe_path};
 pub use plan::{plan, Action, Direction, Entry, Plan, PlanInput, SkipReason, Snapshot, Summary};
+pub use pool::{
+    merge, place, Assigned, Change as PoolChange, Fixup, Member, MergeInput, PlaceInput, Placement,
+    View,
+};
 
 /// The largest file GitHub accepts in a git blob (100 MiB).
 pub const GITHUB_MAX_BLOB: u64 = 100 * 1024 * 1024;

@@ -15,6 +15,8 @@ import {
   MAX_ENCRYPTED_BLOB,
   type PlanInput,
   plan,
+  poolMerge,
+  poolPlace,
 } from "./index";
 import * as raw from "./pkg/nubes_engine.js";
 
@@ -24,6 +26,10 @@ interface Vectors {
   blobs: { text: string; sha: string }[];
   ignore: { patterns: string[]; path: string; ignored: boolean }[];
   plans: { name: string; input: PlanInput; actions: unknown[]; nextBase: unknown }[];
+  pools: {
+    merge: { name: string; input: Parameters<typeof poolMerge>[0]; output: unknown }[];
+    place: { name: string; input: Parameters<typeof poolPlace>[0]; output: unknown }[];
+  };
 }
 
 const vectors = JSON.parse(
@@ -56,6 +62,18 @@ describe("engine vectors", () => {
       const out = plan(v.input);
       expect(out.actions).toEqual(v.actions as never);
       expect(out.nextBase).toEqual(v.nextBase as never);
+    });
+  }
+
+  for (const v of vectors.pools.merge) {
+    test(`pool merge: ${v.name}`, () => {
+      expect(poolMerge(v.input)).toEqual(v.output as never);
+    });
+  }
+
+  for (const v of vectors.pools.place) {
+    test(`pool place: ${v.name}`, () => {
+      expect(poolPlace(v.input)).toEqual(v.output as never);
     });
   }
 });

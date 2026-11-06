@@ -473,6 +473,20 @@ fn selftest() -> Result<()> {
         }
         n += 1;
     }
+    for c in v["pools"]["merge"].as_array().context("pools")? {
+        let input: nubes_core::MergeInput = serde_json::from_value(c["input"].clone())?;
+        if serde_json::to_value(nubes_core::merge(&input))? != c["output"] {
+            bail!("pool merge vector {:?} failed", c["name"]);
+        }
+        n += 1;
+    }
+    for c in v["pools"]["place"].as_array().context("pools")? {
+        let input: nubes_core::PlaceInput = serde_json::from_value(c["input"].clone())?;
+        if serde_json::to_value(nubes_core::place(&input))? != c["output"] {
+            bail!("pool place vector {:?} failed", c["name"]);
+        }
+        n += 1;
+    }
     println!("selftest ok ({n} vectors)");
     Ok(())
 }

@@ -287,5 +287,212 @@
         "notes.md": { "sha": "P1", "size": 5 }
       }
     }
-  ]
+  ],
+  "pools": {
+    "merge": [
+      {
+        "name": "union of the members",
+        "input": {
+          "members": [
+            { "index": 1, "files": { "a": { "sha": "A", "size": 1 } } },
+            { "index": 2, "files": { "b": { "sha": "B", "size": 2 } } }
+          ]
+        },
+        "output": {
+          "files": { "a": { "sha": "A", "size": 1 }, "b": { "sha": "B", "size": 2 } },
+          "owner": { "a": 1, "b": 2 },
+          "fixups": []
+        }
+      },
+      {
+        "name": "same file in two members: the first keeps it",
+        "input": {
+          "members": [
+            { "index": 2, "files": { "x": { "sha": "A", "size": 0 } } },
+            { "index": 1, "files": { "x": { "sha": "A", "size": 0 } } }
+          ]
+        },
+        "output": {
+          "files": { "x": { "sha": "A", "size": 0 } },
+          "owner": { "x": 1 },
+          "fixups": [{ "member": 2, "path": "x", "sha": null, "size": 0 }]
+        }
+      },
+      {
+        "name": "two contents under one path: the second becomes a conflict copy",
+        "input": {
+          "device": "mac",
+          "stamp": "20260101-1200",
+          "members": [
+            { "index": 1, "files": { "d/x.txt": { "sha": "A", "size": 1 } } },
+            { "index": 2, "files": { "d/x.txt": { "sha": "B", "size": 2 } } }
+          ]
+        },
+        "output": {
+          "files": {
+            "d/x.conflict-mac-20260101-1200.txt": { "sha": "B", "size": 2 },
+            "d/x.txt": { "sha": "A", "size": 1 }
+          },
+          "owner": { "d/x.conflict-mac-20260101-1200.txt": 2, "d/x.txt": 1 },
+          "fixups": [
+            { "member": 2, "path": "d/x.txt", "sha": null, "size": 0 },
+            { "member": 2, "path": "d/x.conflict-mac-20260101-1200.txt", "sha": "B", "size": 2 }
+          ]
+        }
+      }
+    ],
+    "place": [
+      {
+        "name": "the first member",
+        "input": { "limit": 100, "changes": [{ "path": "a", "sha": "A", "size": 1 }] },
+        "output": {
+          "members": [{ "index": 1, "changes": [{ "path": "a", "sha": "A", "size": 1 }] }],
+          "create": 1
+        }
+      },
+      {
+        "name": "edits and deletions stay with their owner, deletions last",
+        "input": {
+          "limit": 100,
+          "members": [
+            { "index": 1, "used": 150, "files": { "a": { "sha": "A", "size": 0 } } },
+            { "index": 2, "used": 0, "files": { "b": { "sha": "B", "size": 0 } } }
+          ],
+          "owner": { "a": 1, "b": 2 },
+          "changes": [
+            { "path": "a", "sha": "A2", "size": 10 },
+            { "path": "b", "sha": null, "size": 0 }
+          ]
+        },
+        "output": {
+          "members": [
+            { "index": 1, "changes": [{ "path": "a", "sha": "A2", "size": 10 }] },
+            { "index": 2, "changes": [{ "path": "b", "sha": null, "size": 0 }] }
+          ],
+          "create": 0
+        }
+      },
+      {
+        "name": "new files go to the first member with room",
+        "input": {
+          "limit": 100,
+          "members": [
+            { "index": 1, "used": 90 },
+            { "index": 2, "used": 10 },
+            { "index": 3, "used": 0 }
+          ],
+          "changes": [
+            { "path": "n1", "sha": "N1", "size": 20 },
+            { "path": "n2", "sha": "N2", "size": 5 }
+          ]
+        },
+        "output": {
+          "members": [
+            { "index": 1, "changes": [{ "path": "n2", "sha": "N2", "size": 5 }] },
+            { "index": 2, "changes": [{ "path": "n1", "sha": "N1", "size": 20 }] }
+          ],
+          "create": 0
+        }
+      },
+      {
+        "name": "a rename stays with its content",
+        "input": {
+          "limit": 100,
+          "members": [
+            { "index": 1, "used": 10 },
+            { "index": 2, "used": 50, "files": { "old": { "sha": "S", "size": 30 } } }
+          ],
+          "owner": { "old": 2 },
+          "changes": [
+            { "path": "new", "sha": "S", "size": 30 },
+            { "path": "old", "sha": null, "size": 0 }
+          ]
+        },
+        "output": {
+          "members": [
+            {
+              "index": 2,
+              "changes": [
+                { "path": "new", "sha": "S", "size": 30 },
+                { "path": "old", "sha": null, "size": 0 }
+              ]
+            }
+          ],
+          "create": 0
+        }
+      },
+      {
+        "name": "full members spill into new ones",
+        "input": {
+          "limit": 100,
+          "members": [{ "index": 1, "used": 95 }],
+          "changes": [
+            { "path": "a", "sha": "A", "size": 10 },
+            { "path": "b", "sha": "B", "size": 50 },
+            { "path": "c", "sha": "C", "size": 60 }
+          ]
+        },
+        "output": {
+          "members": [
+            {
+              "index": 2,
+              "changes": [
+                { "path": "a", "sha": "A", "size": 10 },
+                { "path": "b", "sha": "B", "size": 50 }
+              ]
+            },
+            { "index": 3, "changes": [{ "path": "c", "sha": "C", "size": 60 }] }
+          ],
+          "create": 2
+        }
+      },
+      {
+        "name": "a file larger than the limit gets a member of its own",
+        "input": {
+          "limit": 100,
+          "members": [{ "index": 1, "used": 30 }],
+          "changes": [
+            { "path": "big", "sha": "G", "size": 500 },
+            { "path": "small", "sha": "S", "size": 5 }
+          ]
+        },
+        "output": {
+          "members": [
+            { "index": 1, "changes": [{ "path": "small", "sha": "S", "size": 5 }] },
+            { "index": 2, "changes": [{ "path": "big", "sha": "G", "size": 500 }] }
+          ],
+          "create": 1
+        }
+      },
+      {
+        "name": "no limit: a single member takes everything",
+        "input": {
+          "limit": null,
+          "members": [{ "index": 1, "used": 1000000000000 }],
+          "changes": [{ "path": "a", "sha": "A", "size": 5 }]
+        },
+        "output": {
+          "members": [{ "index": 1, "changes": [{ "path": "a", "sha": "A", "size": 5 }] }],
+          "create": 0
+        }
+      },
+      {
+        "name": "duplicate clean-ups go to their member",
+        "input": {
+          "limit": 100,
+          "members": [{ "index": 1, "used": 1 }, { "index": 2, "used": 1 }],
+          "owner": { "x": 1 },
+          "fixups": [{ "member": 2, "path": "x", "sha": null, "size": 0 }],
+          "changes": [{ "path": "x", "sha": "X2", "size": 1 }]
+        },
+        "output": {
+          "members": [
+            { "index": 1, "changes": [{ "path": "x", "sha": "X2", "size": 1 }] },
+            { "index": 2, "changes": [{ "path": "x", "sha": null, "size": 0 }] }
+          ],
+          "create": 0
+        }
+      }
+    ]
+  }
 }
