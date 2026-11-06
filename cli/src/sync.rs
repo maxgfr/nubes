@@ -1,16 +1,19 @@
-//! Runs a sync: plan with nubes-core, apply the remote side in one commit,
-//! then the local side, then store the new base.
+//! Runs a sync: plan with nubes-core, apply the remote side (one commit per
+//! repository that changes), then the local side, then store the new base.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
-use nubes_core::{plan, Action, Direction, Entry, Matcher, Plan, PlanInput, SkipReason, Snapshot};
+use nubes_core::{
+    plan, Action, Direction, Entry, Matcher, Plan, PlanInput, PoolChange, SkipReason, Snapshot,
+};
 
 use crate::config::{FileState, Folder, State};
-use crate::github::{Change, Poll, RefMoved, Remote, RemoteState};
+use crate::github::{Change, Poll, RefMoved, RemoteState};
+use crate::pool::Pool;
 use crate::scan::{hash_file, mtime_ns, scan, LocalFile};
 use crate::util;
 
@@ -23,7 +26,8 @@ pub struct Options {
 #[derive(Debug, Default)]
 pub struct Outcome {
     pub plan: Plan,
-    pub commit: Option<String>,
+    /// `(repository, commit)` for each repository that changed.
+    pub commits: Vec<(String, String)>,
 }
 
 pub fn base_snapshot(state: &State) -> Snapshot {
@@ -44,21 +48,6 @@ pub fn base_snapshot(state: &State) -> Snapshot {
 
 fn local_snapshot(files: &BTreeMap<String, LocalFile>) -> Snapshot {
     files
-        .iter()
-        .map(|(p, f)| {
-            (
-                p.clone(),
-                Entry {
-                    sha: f.sha.clone(),
-                    size: f.size,
-                },
-            )
-        })
-        .collect()
-}
-
-fn remote_snapshot(r: &RemoteState) -> Snapshot {
-    r.files
         .iter()
         .map(|(p, f)| {
             (
@@ -103,16 +92,15 @@ pub fn describe(a: &Action) -> String {
     }
 }
 
-fn commit_message(p: &Plan, remote: &RemoteState, device: &str) -> String {
-    let (mut added, mut updated) = (0, 0);
-    for a in &p.actions {
-        match a {
-            Action::Upload { path, .. } if remote.files.contains_key(path) => updated += 1,
-            Action::Upload { .. } | Action::Conflict { upload: true, .. } => added += 1,
-            _ => {}
+fn commit_message(changes: &[Change], remote: &RemoteState, device: &str) -> String {
+    let (mut added, mut updated, mut deleted) = (0, 0, 0);
+    for c in changes {
+        match &c.sha {
+            None => deleted += 1,
+            Some(_) if remote.files.contains_key(&c.path) => updated += 1,
+            Some(_) => added += 1,
         }
     }
-    let deleted = p.summary.delete_remote;
     let mut parts = Vec::new();
     if added > 0 {
         parts.push(format!("{added} added"));
@@ -196,21 +184,25 @@ fn prune_dirs(root: &Path, path: &str) {
     }
 }
 
-pub fn run(folder: &Folder, remote: &Remote<'_>, opts: &Options) -> Result<Outcome> {
+pub fn run(folder: &Folder, pool: &mut Pool<'_>, opts: &Options) -> Result<Outcome> {
     let ignore = folder.ignore_lines()?;
     let matcher = Matcher::new(&ignore).map_err(anyhow::Error::msg)?;
-    for attempt in 0..5 {
+    let device = folder.config.device.clone();
+    pool.discover()?;
+    'attempt: for attempt in 0..6 {
         let state = folder.load_state()?;
-        let mut rstate = remote.state()?;
-        if (rstate.head.is_none() || !rstate.has_meta) && !opts.dry_run {
-            remote.ensure_meta(&rstate)?;
-            rstate = remote.state()?;
-        }
+        let stamp = util::stamp(util::now_secs());
+        let mut ps = pool.state(&device, &stamp)?;
         if !opts.dry_run {
-            remote.unlock(&rstate)?;
+            for _ in 0..3 {
+                if !pool.ready(&ps)? {
+                    break;
+                }
+                ps = pool.state(&device, &stamp)?;
+            }
         }
         if attempt == 0 && !opts.quiet {
-            for f in &rstate.foreign {
+            for f in ps.members.iter().flat_map(|m| &m.foreign) {
                 eprintln!("- {f}: left alone, not written by nubes in this encrypted folder");
             }
         }
@@ -221,81 +213,123 @@ pub fn run(folder: &Folder, remote: &Remote<'_>, opts: &Options) -> Result<Outco
         let input = PlanInput {
             base: base_snapshot(&state),
             local: local_snapshot(&local.files),
-            remote: remote_snapshot(&rstate),
+            remote: ps.view.files.clone(),
             direction: opts.direction,
             ignore: ignore.clone(),
-            device: folder.config.device.clone(),
-            stamp: util::stamp(util::now_secs()),
+            device: device.clone(),
+            stamp,
             // Encryption adds a little: keep the sealed blob under the limit.
-            max_size: rstate.encrypted.then_some(nubes_core::GITHUB_MAX_ENCRYPTED),
+            max_size: ps.encrypted().then_some(nubes_core::GITHUB_MAX_ENCRYPTED),
         };
         let p = plan(&input).map_err(anyhow::Error::msg)?;
         if opts.dry_run {
             return Ok(Outcome {
                 plan: p,
-                commit: None,
+                commits: Vec::new(),
             });
         }
 
-        // 1. Remote side, in a single commit.
-        let mut changes = Vec::new();
+        // 1. Remote side: one commit per repository that changes.
+        let mut wanted: Vec<PoolChange> = Vec::new();
+        // Path in the repository → (local file to read, mode).
+        let mut sources: HashMap<String, (String, String)> = HashMap::new();
         for a in &p.actions {
             match a {
-                Action::Upload { path, sha, .. } => {
-                    if !remote.has(sha, &rstate) {
-                        let data = read_verified(&folder.root, path, sha)?;
-                        remote.put(&data, sha, &rstate)?;
-                    }
-                    changes.push(Change {
+                Action::Upload { path, sha, size } => {
+                    wanted.push(PoolChange {
                         path: path.clone(),
-                        mode: mode_for(local.files.get(path), rstate.files.get(path)),
                         sha: Some(sha.clone()),
+                        size: *size,
                     });
+                    let mode = mode_for(local.files.get(path), ps.file(path));
+                    sources.insert(path.clone(), (path.clone(), mode));
                 }
-                Action::DeleteRemote { path } => changes.push(Change {
+                Action::DeleteRemote { path } => wanted.push(PoolChange {
                     path: path.clone(),
-                    mode: "100644".into(),
                     sha: None,
+                    size: 0,
                 }),
                 Action::Conflict {
                     path,
                     renamed_to,
                     local_sha,
+                    local_size,
                     upload: true,
                     ..
                 } => {
-                    if !remote.has(local_sha, &rstate) {
-                        let data = read_verified(&folder.root, path, local_sha)?;
-                        remote.put(&data, local_sha, &rstate)?;
-                    }
-                    changes.push(Change {
+                    wanted.push(PoolChange {
                         path: renamed_to.clone(),
-                        mode: mode_for(local.files.get(path), None),
                         sha: Some(local_sha.clone()),
+                        size: *local_size,
                     });
+                    let mode = mode_for(local.files.get(path), None);
+                    sources.insert(renamed_to.clone(), (path.clone(), mode));
                 }
                 _ => {}
             }
         }
-        let head = rstate.head.clone().unwrap_or_default();
-        let new_head = if changes.is_empty() {
-            rstate.head.clone()
-        } else {
-            let msg = commit_message(&p, &rstate, &folder.config.device);
-            match remote.commit(&changes, &msg, &rstate) {
-                Ok(c) => Some(c),
+        let placement = pool.place(&ps, &wanted)?;
+        if placement.create > 0 {
+            pool.create(placement.create)?;
+            continue; // plan again with the new repositories
+        }
+        let mut heads = pool.heads(&ps);
+        let mut commits = Vec::new();
+        for assigned in &placement.members {
+            let i = (assigned.index - 1) as usize;
+            let (m, rs) = (&pool.members[i], &ps.members[i]);
+            let mut changes = Vec::new();
+            for c in &assigned.changes {
+                let Some(sha) = &c.sha else {
+                    changes.push(Change {
+                        path: c.path.clone(),
+                        mode: "100644".into(),
+                        sha: None,
+                    });
+                    continue;
+                };
+                let mode = match sources.get(&c.path) {
+                    Some((src, mode)) => {
+                        if !m.has(sha, rs) {
+                            let data = read_verified(&folder.root, src, sha)?;
+                            m.put(&data, sha, rs)?;
+                        }
+                        mode.clone()
+                    }
+                    // A duplicate renamed in place: its content is already there.
+                    None => rs
+                        .files
+                        .values()
+                        .find(|f| f.sha == *sha)
+                        .map_or_else(|| "100644".into(), |f| f.mode.clone()),
+                };
+                changes.push(Change {
+                    path: c.path.clone(),
+                    mode,
+                    sha: Some(sha.clone()),
+                });
+            }
+            let msg = commit_message(&changes, rs, &device);
+            match m.commit(&changes, &msg, rs) {
+                Ok(c) => {
+                    if rs.head.as_deref() != Some(c.as_str()) {
+                        commits.push((m.full.clone(), c.clone()));
+                    }
+                    heads.insert(m.full.clone(), c);
+                }
                 Err(e) if e.downcast_ref::<RefMoved>().is_some() => {
                     if !opts.quiet {
                         eprintln!(
-                            "the repository changed meanwhile, planning again ({})",
+                            "{} changed meanwhile, planning again ({})",
+                            m.full,
                             attempt + 1
                         );
                     }
-                    continue;
+                    continue 'attempt;
                 }
                 Err(e) => return Err(e),
             }
-        };
+        }
 
         // 2. Local side. What the folder now holds, for the hash cache.
         let mut known: BTreeMap<String, String> = local
@@ -313,11 +347,11 @@ pub fn run(folder: &Folder, remote: &Remote<'_>, opts: &Options) -> Result<Outco
                         failed = true;
                         continue;
                     }
-                    let data = remote.get(sha)?;
+                    let data = pool.get(&ps, path, sha)?;
                     if nubes_core::git_blob_sha(&data) != *sha {
                         bail!("downloaded {path} does not match its id {sha}");
                     }
-                    let exec = rstate.files.get(path).is_some_and(|f| f.mode == "100755");
+                    let exec = ps.file(path).is_some_and(|f| f.mode == "100755");
                     writer.write(path, &data, exec)?;
                     known.insert(path.clone(), sha.clone());
                 }
@@ -352,11 +386,11 @@ pub fn run(folder: &Folder, remote: &Remote<'_>, opts: &Options) -> Result<Outco
                         .with_context(|| format!("renaming {path} to {renamed_to}"))?;
                     known.insert(renamed_to.clone(), local_sha.clone());
                     known.remove(path);
-                    let data = remote.get(remote_sha)?;
+                    let data = pool.get(&ps, path, remote_sha)?;
                     if nubes_core::git_blob_sha(&data) != *remote_sha {
                         bail!("downloaded {path} does not match its id {remote_sha}");
                     }
-                    let exec = rstate.files.get(path).is_some_and(|f| f.mode == "100755");
+                    let exec = ps.file(path).is_some_and(|f| f.mode == "100755");
                     writer.write(path, &data, exec)?;
                     known.insert(path.clone(), remote_sha.clone());
                 }
@@ -398,15 +432,19 @@ pub fn run(folder: &Folder, remote: &Remote<'_>, opts: &Options) -> Result<Outco
                 }
             }
         }
-        folder.save_state(&State {
-            head: new_head.clone(),
+        let mut next = State {
             files,
-        })?;
+            ..State::default()
+        };
+        if pool.auto.is_some() {
+            next.heads = heads;
+            next.members = pool.member_states();
+        } else {
+            next.head = heads.into_values().next();
+        }
+        folder.save_state(&next)?;
         let _ = fs::remove_dir(folder.tmp_dir());
-        return Ok(Outcome {
-            commit: new_head.filter(|h| *h != head && !changes.is_empty()),
-            plan: p,
-        });
+        return Ok(Outcome { commits, plan: p });
     }
     bail!("the repository kept changing during the sync; try again")
 }
@@ -431,30 +469,33 @@ fn local_changed(folder: &Folder, matcher: &Matcher) -> Result<bool> {
             .all(|(p, e)| base.get(p).is_some_and(|b| b.sha == e.sha)))
 }
 
-fn sync_once(folder: &Folder, remote: &Remote<'_>) {
+fn sync_once(folder: &Folder, pool: &mut Pool<'_>) {
     let opts = Options {
         direction: Direction::Both,
         dry_run: false,
         quiet: true,
     };
-    match run(folder, remote, &opts) {
+    match run(folder, pool, &opts) {
         Ok(out) => {
             for a in &out.plan.actions {
                 println!("{}", describe(a));
             }
-            if let Some(c) = out.commit {
-                println!("committed {}", &c[..7.min(c.len())]);
+            for (repo, c) in &out.commits {
+                println!("committed {} in {repo}", &c[..7.min(c.len())]);
             }
         }
         Err(e) => eprintln!("sync failed: {e:#}"),
     }
 }
 
+/// How many polls between two checks for a repository another device added to the pool.
+const DISCOVER_EVERY: u32 = 4;
+
 /// Watches the folder for file events (synced after 2 s of quiet) and polls
-/// the branch every `interval` with its ETag (an unchanged branch costs no
-/// rate limit). Without file events (unsupported file system), scans the
-/// folder every `interval` instead.
-pub fn watch(folder: &Folder, remote: &Remote<'_>, interval: Duration) -> Result<()> {
+/// each repository's branch every `interval` with its ETag (an unchanged
+/// branch costs no rate limit). Without file events (unsupported file
+/// system), scans the folder every `interval` instead.
+pub fn watch(folder: &Folder, pool: &mut Pool<'_>, interval: Duration) -> Result<()> {
     use notify::{RecursiveMode, Watcher};
     use std::sync::mpsc::{channel, RecvTimeoutError};
 
@@ -485,17 +526,18 @@ pub fn watch(folder: &Folder, remote: &Remote<'_>, interval: Duration) -> Result
     eprintln!(
         "watching {} ⇄ {} (remote checked every {}s; Ctrl-C to stop)",
         folder.root.display(),
-        remote.full,
+        pool.describe(),
         interval.as_secs()
     );
     let rescan = if live { RESCAN } else { interval };
-    let mut etag: Option<String> = None;
+    let mut etags: Vec<Option<String>> = Vec::new();
+    let mut polls = 0u32;
     let mut next_poll = Instant::now() + interval;
     let mut next_scan = Instant::now() + rescan;
     let mut pending = true; // the first round always syncs
     loop {
         if pending {
-            sync_once(folder, remote);
+            sync_once(folder, pool);
             // Edits made during the sync are caught by the check below
             // (the sync's own writes match the new base: no second sync).
             pending = false;
@@ -533,16 +575,26 @@ pub fn watch(folder: &Folder, remote: &Remote<'_>, interval: Duration) -> Result
         }
         if now >= next_poll {
             next_poll = now + interval;
-            match remote
-                .gh
-                .head_if_changed(&remote.full, &remote.branch, etag.as_deref())
-            {
-                Ok(Poll::NotModified) => {}
-                Ok(Poll::Changed { head, etag: e }) => {
-                    etag = e;
-                    pending |= folder.load_state().map(|s| s.head != head).unwrap_or(true);
+            polls += 1;
+            if polls % DISCOVER_EVERY == 0 {
+                match pool.discover() {
+                    Ok(found) => pending |= found,
+                    Err(e) => eprintln!("checking the repositories failed: {e:#}"),
                 }
-                Err(e) => eprintln!("checking the repository failed: {e:#}"),
+            }
+            etags.resize(pool.members.len(), None);
+            let state = folder.load_state().ok();
+            for (m, etag) in pool.members.iter().zip(etags.iter_mut()) {
+                match m.gh.head_if_changed(&m.full, &m.branch, etag.as_deref()) {
+                    Ok(Poll::NotModified) => {}
+                    Ok(Poll::Changed { head, etag: e }) => {
+                        *etag = e;
+                        pending |= state
+                            .as_ref()
+                            .is_none_or(|s| s.head_of(&m.full) != head.as_deref());
+                    }
+                    Err(e) => eprintln!("checking {} failed: {e:#}", m.full),
+                }
             }
         }
     }

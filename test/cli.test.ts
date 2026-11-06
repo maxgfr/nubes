@@ -346,3 +346,130 @@ describe.skipIf(!has)("nubes CLI", () => {
     ]);
   });
 });
+
+describe.skipIf(!has)("nubes CLI with a pool of repositories", () => {
+  let name = "";
+  beforeEach(() => {
+    name = `pool${n}`;
+  });
+  const member = (i: number) => `octo/${name}-${i}`;
+  const own = (files: Record<string, string>) =>
+    Object.keys(files)
+      .filter((p) => !p.startsWith(".nubes/"))
+      .sort();
+
+  test("init <name> creates the first private repository; another device joins it", async () => {
+    const a = folder();
+    write(a, "notes/todo.md", "milk");
+    const out = await nubes(a, ["init", name]);
+    expect(out).toContain(`created the private repository ${member(1)}`);
+    expect(fake.hasRepo(member(1))).toBe(true);
+    const meta = JSON.parse(fake.files(member(1))[".nubes/meta.json"] as string);
+    expect(meta).toMatchObject({ format: "nubes", version: 3, pool: name, index: 1 });
+    await nubes(a, ["sync"]);
+    expect(own(fake.files(member(1)))).toEqual(["notes/todo.md"]);
+
+    const b = folder();
+    expect(await nubes(b, ["init", name], "ipad")).not.toContain("created the private");
+    await nubes(b, ["sync"], "ipad");
+    expect(read(b, "notes/todo.md")).toBe("milk");
+    expect(fake.hasRepo(member(2))).toBe(false);
+    expect(await nubes(b, ["status"], "ipad")).toContain(`${member(1)}: `);
+  });
+
+  test("a full repository spills new files into a new one; edits stay where they are", async () => {
+    const a = folder();
+    write(a, "old.txt", "v1");
+    await nubes(a, ["init", name, "--max-size", "1G"]);
+    await nubes(a, ["sync"]);
+    fake.setSize(member(1), 2 * 1024 ** 3);
+
+    write(a, "new.txt", "fresh");
+    write(a, "old.txt", "v2");
+    const out = await nubes(a, ["sync"]);
+    expect(out).toContain(`created the private repository ${member(2)}`);
+    expect(out).toContain(`in ${member(1)}`);
+    expect(out).toContain(`in ${member(2)}`);
+    expect(fake.files(member(1))["old.txt"]).toBe("v2");
+    expect(fake.files(member(1))["new.txt"]).toBeUndefined();
+    expect(fake.files(member(2))["new.txt"]).toBe("fresh");
+    expect(JSON.parse(fake.files(member(2))[".nubes/meta.json"] as string).index).toBe(2);
+
+    // Another device sees one folder.
+    const b = folder();
+    await nubes(b, ["init", name], "ipad");
+    await nubes(b, ["sync"], "ipad");
+    expect(read(b, "new.txt")).toBe("fresh");
+    expect(read(b, "old.txt")).toBe("v2");
+    expect(await nubes(b, ["ls"], "ipad")).toContain("2 file(s)");
+    const status = await nubes(b, ["status"], "ipad");
+    expect(status).toContain(`${member(1)}: 2.0 GB of 1.0 GB (full`);
+
+    // Deleting a file deletes it in its own repository.
+    rmSync(join(b, "new.txt"));
+    await nubes(b, ["sync"], "ipad");
+    expect(fake.files(member(2))["new.txt"]).toBeUndefined();
+    await nubes(a, ["sync"]);
+    expect(existsSync(join(a, "new.txt"))).toBe(false);
+
+    // log and restore find the right repository.
+    const log = await nubes(a, ["log", "old.txt"]);
+    const first = log.trim().split("\n").at(-1)?.split(" ")[0] as string;
+    await nubes(a, ["restore", "old.txt", "--at", first]);
+    expect(read(a, "old.txt")).toBe("v1");
+  });
+
+  test("the same new path in two repositories: one keeps it, the other becomes a conflict copy", async () => {
+    const a = folder();
+    await nubes(a, ["init", name]);
+    await nubes(a, ["sync"]);
+    fake.addRepo(member(2));
+    fake.push(member(2), { ".nubes/meta.json": JSON.stringify({ format: "nubes", pool: name }) });
+    fake.push(member(1), { "x.txt": "from one", "same.txt": "S" });
+    fake.push(member(2), { "x.txt": "from two", "same.txt": "S" });
+    await nubes(a, ["sync"]);
+    expect(read(a, "x.txt")).toBe("from one");
+    const copy = readdirSync(a).find((f) => f.startsWith("x.conflict-")) as string;
+    expect(copy).toBeDefined();
+    expect(read(a, copy)).toBe("from two");
+    expect(own(fake.files(member(1)))).toEqual(["same.txt", "x.txt"]);
+    expect(own(fake.files(member(2)))).toEqual([copy]);
+    expect(await nubes(a, ["sync"])).toContain("up to date");
+  });
+
+  test("an encrypted pool: one passphrase, the key follows into new repositories", async () => {
+    const pass = { NUBES_PASSPHRASE: "correct horse battery staple" };
+    const a = folder();
+    write(a, "a.txt", "secret one");
+    await nubes(a, ["init", name, "--encrypt"], "laptop", "test-token", pass);
+    await nubes(a, ["sync"]);
+    expect(fake.files(member(1))["a.txt.age"]).not.toContain("secret");
+    fake.setSize(member(1), 6 * 1024 ** 3);
+    write(a, "b.txt", "secret two");
+    await nubes(a, ["sync"]);
+    const two = fake.files(member(2));
+    expect(two[".nubes/key.age"]).toBe(fake.files(member(1))[".nubes/key.age"] as string);
+    expect(two["b.txt.age"]).toBeDefined();
+    expect(two["b.txt.age"]).not.toContain("secret");
+
+    const b = folder();
+    await nubes(b, ["init", name], "desk", "test-token", pass);
+    await nubes(b, ["sync"], "desk");
+    expect(read(b, "a.txt")).toBe("secret one");
+    expect(read(b, "b.txt")).toBe("secret two");
+    expect(await nubes(b, ["lock"], "desk")).toContain("key removed");
+    await expect(nubes(b, ["sync"], "desk")).rejects.toThrow(/encrypted/);
+  });
+
+  test("a token that cannot create repositories, and a name already taken, are refused", async () => {
+    fake.tokens.add("no-admin");
+    fake.noAdmin.add("no-admin");
+    const a = folder();
+    await expect(nubes(a, ["init", name], "laptop", "no-admin")).rejects.toThrow(/Administration/);
+    expect(existsSync(join(a, ".nubes/config.json"))).toBe(false);
+
+    fake.addRepo(member(1));
+    fake.push(member(1), { "README.md": "someone else's" });
+    await expect(nubes(a, ["init", name])).rejects.toThrow(/not part of the nubes pool/);
+  });
+});

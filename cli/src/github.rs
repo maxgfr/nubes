@@ -12,12 +12,15 @@ use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
+use crate::config::PoolConfig;
 use crate::crypt::Cipher;
 
 pub const API: &str = "https://api.github.com";
 pub const META_PATH: &str = ".nubes/meta.json";
 /// FORMAT.md version of an encrypted folder.
 const AGE_FORMAT_VERSION: u32 = 2;
+/// FORMAT.md version of a member of a pool (plain or encrypted).
+pub const POOL_FORMAT_VERSION: u32 = 3;
 const BODY_LIMIT: u64 = 256 * 1024 * 1024;
 
 /// A non-2xx answer from GitHub.
@@ -57,6 +60,26 @@ impl fmt::Display for RefMoved {
 }
 
 impl std::error::Error for RefMoved {}
+
+/// What nubes reads of a repository.
+#[derive(Debug, Clone)]
+pub struct RepoInfo {
+    pub default_branch: String,
+    /// What the account may do (a fine-grained token may still be read-only: see `can_write`).
+    pub can_push: bool,
+    /// In bytes, as GitHub reports it: updated a while after changes, every version counts.
+    pub size: u64,
+}
+
+impl RepoInfo {
+    fn from_json(v: &Value) -> Self {
+        Self {
+            default_branch: v["default_branch"].as_str().unwrap_or("main").to_string(),
+            can_push: v["permissions"]["push"].as_bool().unwrap_or(true),
+            size: v["size"].as_u64().unwrap_or(0) * 1024,
+        }
+    }
+}
 
 pub fn status_of(err: &anyhow::Error) -> Option<u16> {
     err.downcast_ref::<StatusError>().map(|e| e.status)
@@ -223,20 +246,35 @@ impl GitHub {
         Ok(v["login"].as_str().unwrap_or_default().to_string())
     }
 
-    /// `(default branch, can push)`.
-    pub fn repo(&self, full: &str) -> Result<(String, bool)> {
-        let v = self.json("GET", &format!("/repos/{full}"), None)?;
-        Ok((
-            v["default_branch"].as_str().unwrap_or("main").to_string(),
-            v["permissions"]["push"].as_bool().unwrap_or(true),
-        ))
+    /// The repository, or None if it does not exist (or the token cannot see it).
+    pub fn repo_info(&self, full: &str) -> Result<Option<RepoInfo>> {
+        match self.json("GET", &format!("/repos/{full}"), None) {
+            Ok(v) => Ok(Some(RepoInfo::from_json(&v))),
+            Err(e) if status_of(&e) == Some(404) => Ok(None),
+            Err(e) => Err(e),
+        }
     }
 
-    /// Size of the repository in bytes, as GitHub reports it (updated a while
-    /// after changes; every version counts).
-    pub fn repo_size(&self, full: &str) -> Result<u64> {
-        let v = self.json("GET", &format!("/repos/{full}"), None)?;
-        Ok(v["size"].as_u64().unwrap_or(0) * 1024)
+    /// Creates a private repository on the token's account; None if one of
+    /// that name exists already (another device may just have created it).
+    pub fn create_repo(&self, name: &str, description: &str) -> Result<Option<RepoInfo>> {
+        let body = json!({
+            "name": name,
+            "description": description,
+            "private": true,
+            "auto_init": false,
+            "has_issues": false,
+            "has_projects": false,
+            "has_wiki": false,
+        });
+        match self.json("POST", "/user/repos", Some(&body)) {
+            Ok(v) => Ok(Some(RepoInfo::from_json(&v))),
+            Err(e) if status_of(&e) == Some(422) => Ok(None),
+            Err(e) if matches!(status_of(&e), Some(403 | 404)) => Err(e.context(format!(
+                "cannot create the repository {name}: the token needs access to “All repositories” and the “Administration” permission set to “Read and write”"
+            ))),
+            Err(e) => Err(e),
+        }
     }
 
     /// Whether the token can really write:`permissions.push` describes the
@@ -581,6 +619,8 @@ pub struct RemoteState {
     /// Content already stored: never uploaded again.
     pub blobs: HashSet<String>,
     pub has_meta: bool,
+    /// The blob of `.nubes/meta.json` at the repository root.
+    pub meta_blob: Option<String>,
     /// Whether the folder is encrypted (it has `.nubes/key.age`).
     pub encrypted: bool,
     pub key_blob: Option<String>,
@@ -596,6 +636,11 @@ pub struct Remote<'a> {
     pub full: String,
     pub branch: String,
     pub prefix: String,
+    /// Under which name this device keeps the folder's key: `(repo, prefix)`,
+    /// or the pool's for a member of a pool (one key for all of them).
+    key_id: (String, String),
+    /// Member of a pool: the pool and its index, written into its meta.json.
+    pool: Option<(PoolConfig, u32)>,
     cipher: RefCell<Option<Cipher>>,
     encrypted: Cell<bool>,
     /// Plain id → (stored id, size), for content seen or uploaded in this run.
@@ -614,12 +659,57 @@ impl<'a> Remote<'a> {
             gh,
             full: full.to_string(),
             branch: branch.to_string(),
+            key_id: (full.to_string(), prefix.clone()),
             prefix,
+            pool: None,
             cipher: RefCell::new(None),
             encrypted: Cell::new(false),
             known: RefCell::new(HashMap::new()),
             manifests: RefCell::new(HashMap::new()),
         }
+    }
+
+    /// Member `index` of the pool `owner/name`: the repository `owner/name-index`.
+    /// All members share one key, kept under the pool's name.
+    pub fn member(gh: &'a GitHub, pool: &PoolConfig, index: u32, branch: &str) -> Self {
+        let full = format!("{}/{}-{index}", pool.owner, pool.name);
+        let mut r = Self::new(gh, &full, branch, "");
+        r.key_id = crate::config::pool_key_id(&pool.owner, &pool.name);
+        r.pool = Some((pool.clone(), index));
+        r
+    }
+
+    /// FORMAT.md's `.nubes/meta.json`: version 3 for a member of a pool.
+    fn meta(&self, recipient: Option<&str>) -> Value {
+        let mut m = json!({
+            "format": "nubes",
+            "version": if recipient.is_some() { AGE_FORMAT_VERSION } else { nubes_core::FORMAT_VERSION },
+            "mode": if recipient.is_some() { "age" } else { "plain" },
+        });
+        if let Some(r) = recipient {
+            m["recipient"] = json!(r);
+        }
+        if let Some((pool, index)) = &self.pool {
+            m["version"] = json!(POOL_FORMAT_VERSION);
+            m["pool"] = json!(pool.name);
+            m["index"] = json!(index);
+            m["maxSize"] = json!(pool.max_size);
+        }
+        m["createdAt"] = json!(crate::util::now_rfc3339());
+        m
+    }
+
+    /// The parsed `.nubes/meta.json`, if any.
+    pub fn read_meta(&self, state: &RemoteState) -> Result<Option<Value>> {
+        let Some(b) = &state.meta_blob else {
+            return Ok(None);
+        };
+        Ok(serde_json::from_slice(&self.gh.blob(&self.full, b)?).ok())
+    }
+
+    /// The key in use (a pool hands it to its other members).
+    pub fn cipher_secret(&self) -> Option<String> {
+        self.cipher.borrow().as_ref().map(Cipher::secret)
     }
 
     pub fn repo_path(&self, path: &str) -> String {
@@ -685,6 +775,7 @@ impl<'a> Remote<'a> {
         for e in entries {
             if e.path == META_PATH {
                 s.has_meta = true;
+                s.meta_blob = Some(e.sha.clone());
             }
             if !s.encrypted {
                 s.blobs.insert(e.sha.clone());
@@ -740,13 +831,7 @@ impl<'a> Remote<'a> {
         if state.has_meta {
             return Ok(false);
         }
-        let meta = json!({
-            "format": "nubes",
-            "version": nubes_core::FORMAT_VERSION,
-            "mode": "plain",
-            "createdAt": crate::util::now_rfc3339(),
-        });
-        let text = format!("{}\n", serde_json::to_string_pretty(&meta)?);
+        let text = format!("{}\n", serde_json::to_string_pretty(&self.meta(None))?);
         self.gh.put_file(
             &self.full,
             &self.branch,
@@ -767,7 +852,7 @@ impl<'a> Remote<'a> {
         if !state.encrypted || self.cipher.borrow().is_some() {
             return Ok(());
         }
-        if let Some(secret) = crate::creds::load_key(&self.full, &self.prefix)? {
+        if let Some(secret) = crate::creds::load_key(&self.key_id.0, &self.key_id.1)? {
             self.set_cipher(Cipher::parse(&secret)?);
             return Ok(());
         }
@@ -775,9 +860,14 @@ impl<'a> Remote<'a> {
         let key_file = self.gh.blob(&self.full, key_blob)?;
         let pass = crate::crypt::passphrase("Passphrase of this encrypted folder: ", false)?;
         let c = Cipher::unlock(&key_file, &pass)?;
-        crate::creds::store_key(&self.full, &self.prefix, &c.secret())?;
+        crate::creds::store_key(&self.key_id.0, &self.key_id.1, &c.secret())?;
         self.set_cipher(c);
         Ok(())
+    }
+
+    /// Forgets the key this device keeps for the folder.
+    pub fn forget_key(&self) -> Result<bool> {
+        crate::creds::remove_key(&self.key_id.0, &self.key_id.1)
     }
 
     /// Makes a new, empty folder encrypted: its key, locked with `passphrase`.
@@ -796,19 +886,45 @@ impl<'a> Remote<'a> {
             );
         }
         let c = Cipher::generate();
-        let meta = json!({
-            "format": "nubes",
-            "version": AGE_FORMAT_VERSION,
-            "mode": "age",
-            "recipient": c.recipient(),
-            "createdAt": crate::util::now_rfc3339(),
-        });
-        let meta = format!("{}\n", serde_json::to_string_pretty(&meta)?);
+        self.seal(&state, &c.lock(passphrase)?, &c.recipient())?;
+        crate::creds::store_key(&self.key_id.0, &self.key_id.1, &c.secret())?;
+        self.set_cipher(Cipher::parse(&c.secret())?);
+        Ok(c)
+    }
+
+    /// Makes a new, empty member of an encrypted pool encrypted with the
+    /// pool's key: the same `key.age` (locked by the same passphrase).
+    pub fn adopt_key(&self, key_file: &[u8], secret: &str) -> Result<()> {
+        let mut state = self.state()?;
+        if self.ensure_meta(&state)? {
+            state = self.state()?;
+        }
+        let c = Cipher::parse(secret)?;
+        if !state.encrypted {
+            if !state.files.is_empty() {
+                bail!(
+                    "{} has plain files: it cannot join an encrypted pool",
+                    self.full
+                );
+            }
+            self.seal(&state, key_file, &c.recipient())?;
+        }
+        self.encrypted.set(true);
+        self.set_cipher(c);
+        Ok(())
+    }
+
+    /// Commits the key file and the age meta.json.
+    fn seal(&self, state: &RemoteState, key_file: &[u8], recipient: &str) -> Result<()> {
+        let meta = format!(
+            "{}\n",
+            serde_json::to_string_pretty(&self.meta(Some(recipient)))?
+        );
         let changes = [
             Change {
                 path: KEY_FILE.into(),
                 mode: "100644".into(),
-                sha: Some(self.gh.create_blob(&self.full, &c.lock(passphrase)?)?),
+                sha: Some(self.gh.create_blob(&self.full, key_file)?),
             },
             Change {
                 path: FOLDER_META.into(),
@@ -816,9 +932,8 @@ impl<'a> Remote<'a> {
                 sha: Some(self.gh.create_blob(&self.full, meta.as_bytes())?),
             },
         ];
-        self.commit(&changes, "nubes: encrypt this folder", &state)?;
-        crate::creds::store_key(&self.full, &self.prefix, &c.secret())?;
-        Ok(c)
+        self.commit(&changes, "nubes: encrypt this folder", state)?;
+        Ok(())
     }
 
     /// Whether `sha` (plain) is already stored.

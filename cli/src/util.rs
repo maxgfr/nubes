@@ -56,6 +56,23 @@ pub fn human_size(n: u64) -> String {
     }
 }
 
+/// Parses `5G`, `500M`, `1.5GB`, `2048K` or a number of bytes (units of 1024).
+pub fn parse_size(s: &str) -> anyhow::Result<u64> {
+    let t = s.trim().to_ascii_uppercase();
+    let t = t.strip_suffix('B').unwrap_or(&t);
+    let (num, mul) = match t.chars().last() {
+        Some('K') => (&t[..t.len() - 1], 1u64 << 10),
+        Some('M') => (&t[..t.len() - 1], 1 << 20),
+        Some('G') => (&t[..t.len() - 1], 1 << 30),
+        Some('T') => (&t[..t.len() - 1], 1 << 40),
+        _ => (t, 1),
+    };
+    match num.trim().parse::<f64>() {
+        Ok(v) if v.is_finite() && v > 0.0 => Ok((v * mul as f64) as u64),
+        _ => anyhow::bail!("invalid size {s:?} (examples: 5G, 500M)"),
+    }
+}
+
 /// A short name for this machine, used in conflict copies and commit messages.
 pub fn device_name() -> String {
     if let Ok(name) = std::env::var("NUBES_DEVICE") {
@@ -103,5 +120,11 @@ mod tests {
     fn sizes() {
         assert_eq!(human_size(12), "12 B");
         assert_eq!(human_size(1536), "1.5 KB");
+        assert_eq!(parse_size("5G").unwrap(), 5 << 30);
+        assert_eq!(parse_size("1.5gb").unwrap(), 3 << 29);
+        assert_eq!(parse_size("2048").unwrap(), 2048);
+        assert_eq!(parse_size("10K").unwrap(), 10240);
+        assert!(parse_size("big").is_err());
+        assert!(parse_size("0").is_err());
     }
 }

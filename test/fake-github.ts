@@ -38,6 +38,12 @@ export interface FakeGitHub {
   tokens: Set<string>;
   /** Tokens that can read but not write (fine-grained token with Contents: Read-only). */
   readOnly: Set<string>;
+  /** Tokens that cannot create repositories (no Administration permission). */
+  noAdmin: Set<string>;
+  /** Size to report for a repository, in bytes, instead of its real one. */
+  setSize(full: string, bytes: number): void;
+  /** Whether a repository exists. */
+  hasRepo(full: string): boolean;
   /** Conditional requests answered 304. */
   stats: { notModified: number };
 }
@@ -67,6 +73,8 @@ export function createFakeGitHub(opts: { login?: string; tokens?: string[] } = {
   const login = opts.login ?? "octo";
   const tokens = new Set(opts.tokens ?? ["test-token"]);
   const readOnly = new Set<string>();
+  const noAdmin = new Set<string>();
+  const sizes = new Map<string, number>();
   const stats = { notModified: 0 };
   const repos = new Map<string, Repo>();
   const log: string[] = [];
@@ -153,6 +161,8 @@ export function createFakeGitHub(opts: { login?: string; tokens?: string[] } = {
 
   /** In KB, like GitHub: the bytes of every blob stored. */
   const repoSize = (r: Repo) => {
+    const forced = sizes.get(`${r.owner}/${r.name}`.toLowerCase());
+    if (forced !== undefined) return Math.ceil(forced / 1024);
     let n = 0;
     for (const o of r.objects.values()) if (o.type === "blob") n += o.data.length;
     return Math.ceil(n / 1024);
@@ -166,6 +176,29 @@ export function createFakeGitHub(opts: { login?: string; tokens?: string[] } = {
     return c ? flatten(r, c.tree) : new Map<string, { mode: string; sha: string }>();
   };
 
+  const addRepo = (full: string, o: { private?: boolean; branch?: string } = {}) => {
+    const [owner, name] = full.split("/") as [string, string];
+    const r: Repo = {
+      owner,
+      name,
+      private: o.private ?? true,
+      defaultBranch: o.branch ?? "main",
+      objects: new Map(),
+      refs: new Map(),
+    };
+    repos.set(full.toLowerCase(), r);
+    return r;
+  };
+
+  const repoJson = (r: Repo) => ({
+    full_name: `${r.owner}/${r.name}`,
+    name: r.name,
+    default_branch: r.defaultBranch,
+    private: r.private,
+    permissions: { push: true },
+    size: repoSize(r),
+  });
+
   const routes: [
     string,
     RegExp,
@@ -177,34 +210,28 @@ export function createFakeGitHub(opts: { login?: string; tokens?: string[] } = {
     ) => Promise<Response> | Response,
   ][] = [
     ["GET", /^\/user$/, () => json({ login })],
+    ["GET", /^\/user\/repos$/, () => json([...repos.values()].map(repoJson))],
     [
-      "GET",
+      "POST",
       /^\/user\/repos$/,
-      () =>
-        json(
-          [...repos.values()].map((r) => ({
-            full_name: `${r.owner}/${r.name}`,
-            default_branch: r.defaultBranch,
-            private: r.private,
-            permissions: { push: true },
-            size: repoSize(r),
-          })),
-        ),
+      async (_r, _m, req) => {
+        const token = (req.headers.get("authorization") ?? "").replace(/^(Bearer|token)\s+/i, "");
+        if (noAdmin.has(token)) return err(403, "Resource not accessible by personal access token");
+        const body = (await req.json()) as { name?: string; private?: boolean };
+        const name = body.name ?? "";
+        if (!/^[\w.-]+$/.test(name)) return err(422, "Repository creation failed.");
+        if (repoOf(login, name))
+          return json(
+            {
+              message: "Repository creation failed.",
+              errors: [{ field: "name", message: "name already exists on this account" }],
+            },
+            422,
+          );
+        return json(repoJson(addRepo(`${login}/${name}`, { private: body.private ?? false })), 201);
+      },
     ],
-    [
-      "GET",
-      /^\/repos\/([^/]+)\/([^/]+)$/,
-      (r) =>
-        r
-          ? json({
-              full_name: `${r.owner}/${r.name}`,
-              default_branch: r.defaultBranch,
-              private: r.private,
-              permissions: { push: true },
-              size: repoSize(r),
-            })
-          : err(404, "Not Found"),
-    ],
+    ["GET", /^\/repos\/([^/]+)\/([^/]+)$/, (r) => (r ? json(repoJson(r)) : err(404, "Not Found"))],
     [
       "GET",
       /^\/repos\/[^/]+\/[^/]+\/git\/ref\/heads\/(.+)$/,
@@ -523,17 +550,16 @@ export function createFakeGitHub(opts: { login?: string; tokens?: string[] } = {
     log,
     tokens,
     readOnly,
+    noAdmin,
     stats,
     addRepo(full, o = {}) {
-      const [owner, name] = full.split("/") as [string, string];
-      repos.set(full.toLowerCase(), {
-        owner,
-        name,
-        private: o.private ?? true,
-        defaultBranch: o.branch ?? "main",
-        objects: new Map(),
-        refs: new Map(),
-      });
+      addRepo(full, o);
+    },
+    setSize(full, bytes) {
+      sizes.set(full.toLowerCase(), bytes);
+    },
+    hasRepo(full) {
+      return repos.has(full.toLowerCase());
     },
     files(full, branch) {
       const r = repos.get(full.toLowerCase());
