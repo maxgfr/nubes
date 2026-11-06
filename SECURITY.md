@@ -4,9 +4,16 @@
 
 - **No nubes server.** The web app is static files on GitHub Pages; the CLI is
   a single binary. Both talk to `api.github.com` only.
-- **Your token, your scope.** Use a fine-grained token limited to one
-  repository with *Contents: Read and write*. It can read and write that
-  repository's contents and nothing else.
+- **Your token, your scope.** For a folder spread over repositories nubes
+  creates (`nubes init <name>`, or a name in the web app), the token needs
+  *All repositories* with *Contents* and *Administration: Read and write*:
+  it can then read, write and administer every repository of your account,
+  deleting them included (nubes never does). Treat it like a password.
+  nubes only creates private repositories named `<name>-<n>` and only writes
+  to those whose `.nubes/meta.json` says they belong to that name. To keep a
+  token to one repository, use one existing repository instead (`nubes init
+  owner/repo`): a fine-grained token limited to it with *Contents: Read and
+  write* can read and write that repository's contents and nothing else.
 - **Plain folders are not encrypted.** Keep the repository private: anyone
   with access to it, and GitHub itself, can read the files.
 - **Encrypted folders** (`nubes init owner/repo --encrypt`, or "Encrypt the

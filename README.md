@@ -3,7 +3,9 @@
 [![CI](https://github.com/maxgfr/nubes/actions/workflows/ci.yml/badge.svg)](https://github.com/maxgfr/nubes/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/maxgfr/nubes?filter=cli-v*&label=cli)](https://github.com/maxgfr/nubes/releases)
 
-**Your files in a GitHub repository you own.** Drop them in the browser from any
+**Your files in private GitHub repositories you own.** Give your folder a name:
+nubes creates the repositories (`<name>-1`, then `<name>-2` when the first one
+is full…) and shows them as one folder. Drop files in the browser from any
 device, sync a folder from the terminal, get every version back from the
 history. There is no nubes server: the web app and the CLI talk to the GitHub
 API directly with a fine-grained token you create.
@@ -12,10 +14,17 @@ API directly with a fine-grained token you create.
 
 ## How it works
 
-- Files are stored **as plain files** in a repository (or a sub-folder of one).
-  You can read them on github.com, clone them with git, and the history keeps
-  every version.
-- Each change is **one commit**: dropping 40 photos makes one commit, not 40.
+- Files are stored **as plain files** in private repositories of your account
+  (or in one repository you pick, or a sub-folder of one). You can read them
+  on github.com, clone them with git, and the history keeps every version.
+- **One name, as many repositories as needed.** GitHub recommends keeping a
+  repository under 5 GB (every version counts). New files go to the first
+  repository with room; when all are full, nubes creates the next one,
+  private. A file stays in the repository that holds it, edits included, so
+  no change ever spans two commits for one file. The limit is 5 GB by
+  default (`--max-size`).
+- Each change is **one commit** per repository it touches: dropping 40 photos
+  makes one commit, not 40.
   A commit only lands if nobody else committed in the meantime; otherwise
   nubes reads the branch again and re-plans. Several devices can work at the
   same time without overwriting each other.
@@ -35,6 +44,7 @@ API directly with a fine-grained token you create.
 | Deleted on one side, **edited** on the other | The edit wins |
 | Edited on both sides | Both kept: your copy becomes `name.conflict-<device>-<date>.ext` |
 | Larger than 100 MB | Skipped (GitHub's limit), and reported |
+| The same new path added to two repositories at once | The first repository keeps it; the other copy becomes a conflict copy (or is dropped if identical) |
 
 `.nubesignore` (gitignore syntax) keeps files out. `.nubes/`, `.git/`,
 `.DS_Store`, `Thumbs.db` and Office lock files are always ignored.
@@ -54,14 +64,22 @@ instance) can clone it into Files when you need that.
 
 ## Setup
 
-1. Create a **private** repository, e.g. [`nubes-files`](https://github.com/new?name=nubes-files&visibility=private).
-2. Create a [fine-grained token](https://github.com/settings/personal-access-tokens/new).
+1. Create a [fine-grained token](https://github.com/settings/personal-access-tokens/new).
    GitHub's defaults give a token nubes cannot use, so on that page:
-   - **Repository access**: choose **Only select repositories**, then pick your repository;
-   - **Permissions**: click **Add permissions**, check **Contents**, set it to **Read and write**;
+   - **Repository access**: choose **All repositories** (nubes creates its
+     repositories as they fill up);
+   - **Permissions**: click **Add permissions**, check **Contents** and
+     **Administration**, set both to **Read and write**;
    - **Generate token** and copy it.
-3. Paste it in the web app, or run `nubes login`. Picking the repository in
-   the web app, or `nubes init`, checks that the token can really write to it.
+2. Paste it in the web app and give your folder a name (`nubes` by default),
+   or run `nubes login` then `nubes init <name>`. nubes creates the private
+   repository `<name>-1` right away. Use the same name on every device.
+
+To use **one existing repository** instead (no repository created for you),
+give the token **Only select repositories** with that repository and
+**Contents: Read and write** only, then pick it under "Use an existing
+repository instead" in the web app, or run `nubes init owner/repo`. Such a
+token cannot see or touch anything else (see [`SECURITY.md`](SECURITY.md)).
 
 The token is kept in your browser (local storage if you choose "stay signed
 in", the tab's session storage otherwise) and is only ever sent to
@@ -77,10 +95,11 @@ brew install maxgfr/tap/nubes
 
 nubes login                      # paste the token (checked with GitHub, then stored)
 cd ~/Documents/cloud
-nubes init you/nubes-files       # or you/repo:sub/folder, --branch name, --device name
+nubes init nubes                 # repositories nubes-1, nubes-2… (--max-size 5G, --device name)
+nubes init you/nubes-files       # or one existing repository: you/repo:sub/folder, --branch name
 nubes status                     # what a sync would do
 nubes sync                       # two-way, one commit
-nubes init you/vault --encrypt   # a new folder, encrypted end to end with a passphrase
+nubes init vault --encrypt       # a new folder, encrypted end to end with a passphrase
 nubes watch                      # sync within seconds of a change, while running
 nubes service install            # the same in the background, from every login
 ```
@@ -90,7 +109,7 @@ nubes service install            # the same in the background, from every login
 | `nubes push` / `nubes pull` | One direction only (`pull` never loses an unpushed edit: it keeps a conflict copy) |
 | `nubes watch [--interval 15]` | Syncs 2 s after a local change, and when the repository changes (checked every 15 s with an ETag: an unchanged repository costs no rate limit) |
 | `nubes service install` / `status` / `uninstall` | Runs `nubes watch` for this folder from every login: a LaunchAgent on macOS (log in `.nubes/watch.log`), a `systemd --user` unit on Linux (`journalctl --user -u nubes-…`). Needs a stored token (`nubes login`) |
-| `nubes ls [folder]` | List the files in the repository |
+| `nubes ls [folder]` | List the remote files (all the repositories of the folder) |
 | `nubes log [path]` | Commits that changed a path |
 | `nubes restore <path> --at <commit>` | Write an older version into the folder (then `nubes sync`) |
 | `nubes whoami` | Account and token source in use |
@@ -103,11 +122,13 @@ match, differing ones become conflict copies, nothing is deleted.
 
 ## Encryption
 
-A folder can be encrypted end to end when it is created: `nubes init
-owner/repo --encrypt` (or `owner/repo:folder`), or "Encrypt the files end to
-end" when choosing the repository in the web app. Each file is stored as
-`<name>.age` ([age](https://age-encryption.org) encryption); its key is in the
-repository, locked by your passphrase, which each device asks for once.
+A folder can be encrypted end to end when it is created: `nubes init <name>
+--encrypt` (or `owner/repo --encrypt`, `owner/repo:folder`), or "Encrypt the
+files end to end" when naming the folder in the web app. Each file is stored
+as `<name>.age` ([age](https://age-encryption.org) encryption); its key is in
+the repository (copied into each new repository of the folder: one
+passphrase for all of them), locked by your passphrase, which each device
+asks for once.
 GitHub then sees file names and sizes, not contents. A plain folder cannot be
 converted: create a new one and copy the files. See [`FORMAT.md`](FORMAT.md)
 and [`SECURITY.md`](SECURITY.md).
