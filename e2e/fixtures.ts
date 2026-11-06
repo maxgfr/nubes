@@ -30,7 +30,7 @@ export { expect } from "@playwright/test";
 
 /** Opens “Use an existing repository instead” on the onboarding page. */
 export async function useExisting(page: Page): Promise<void> {
-  await page.getByText("Use an existing repository instead").click();
+  await page.getByRole("button", { name: "Use an existing repository instead" }).click();
 }
 
 /** Signs in and picks octo/files. */

@@ -302,13 +302,8 @@ input:focus-visible {
   gap: 16px;
 }
 
-.existing summary {
-  cursor: pointer;
-  font-weight: 600;
-}
-
-.existing:not([open]) {
-  padding-block: 14px;
+.onboarding > .btn[aria-expanded] {
+  justify-self: start;
 }
 
 .visually-hidden {
